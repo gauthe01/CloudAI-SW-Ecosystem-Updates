@@ -561,7 +561,7 @@ function emptyForm(): MetadataFormState {
 
 function emptyTimelineRow(): EditableTimelineRow {
   return {
-    local_id: crypto.randomUUID(),
+    local_id: createLocalId(),
     milestone: "",
     target_date: "",
   };
@@ -569,7 +569,7 @@ function emptyTimelineRow(): EditableTimelineRow {
 
 function emptyRisk(): EditableRisk {
   return {
-    local_id: crypto.randomUUID(),
+    local_id: createLocalId(),
     risk_id: null,
     description: "",
     green_action: "",
@@ -582,7 +582,7 @@ function emptyRisk(): EditableRisk {
 
 function emptyResource(): EditableResource {
   return {
-    local_id: crypto.randomUUID(),
+    local_id: createLocalId(),
     title: "",
     url: "",
     description: "",
@@ -595,15 +595,23 @@ function emptyResource(): EditableResource {
 function riskToEditable(risk: PartnerMetadataRisk): EditableRisk {
   return {
     ...risk,
-    local_id: risk.risk_id ?? crypto.randomUUID(),
+    local_id: risk.risk_id ?? createLocalId(),
   };
 }
 
 function resourceToEditable(resource: PartnerResourceLink): EditableResource {
   return {
     ...resource,
-    local_id: resource.resource_link_id ?? crypto.randomUUID(),
+    local_id: resource.resource_link_id ?? createLocalId(),
   };
+}
+
+function createLocalId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+
+  return `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function valueOrNull(value: string | null): string | null {
@@ -624,7 +632,7 @@ function timelineRowsFromText(value: string | null): EditableTimelineRow[] {
   return value.split("\n").map((line) => {
     const [milestone = "", targetDate = ""] = line.split(" | Target: ");
     return {
-      local_id: crypto.randomUUID(),
+      local_id: createLocalId(),
       milestone,
       target_date: targetDate.trim(),
     };
