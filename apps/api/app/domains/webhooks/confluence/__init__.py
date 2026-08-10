@@ -1,0 +1,1 @@
+"""Confluence webhook ingestion."""

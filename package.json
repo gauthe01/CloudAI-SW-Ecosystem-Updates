@@ -1,0 +1,12 @@
+{
+  "name": "cloud-ai-software-ecosystem-updates",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cloud AI Software Ecosystem Updates monorepo.",
+  "scripts": {
+    "dev:web": "pnpm --dir apps/web dev",
+    "build:web": "pnpm --dir apps/web build",
+    "typecheck:web": "pnpm --dir apps/web typecheck"
+  },
+  "packageManager": "pnpm@11.16.0"
+}

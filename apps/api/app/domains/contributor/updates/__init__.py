@@ -1,0 +1,1 @@
+"""Contributor update lifecycle domain."""

@@ -1,0 +1,77 @@
+name: cloudai-software-ecosystem-updates
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cloud_ai_software_ecosystem_updates
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d cloud_ai_software_ecosystem_updates"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./apps/api
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/cloud_ai_software_ecosystem_updates
+      CORS_ORIGINS: http://localhost:3000
+      LOCAL_UPLOAD_STORAGE_DIR: /app/var/uploads
+    ports:
+      - "8000:8000"
+    volumes:
+      - upload_data:/app/var/uploads
+      - ./certs:/app/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: ./apps/api
+    command: ["python", "-m", "app.workers.main", "--poll-seconds", "10"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/cloud_ai_software_ecosystem_updates
+      LOCAL_UPLOAD_STORAGE_DIR: /app/var/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - upload_data:/app/var/uploads
+      - ./certs:/app/certs:ro
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+    external: true
+    name: coudai-swecostsytemupdates_postgres_data
+  upload_data:
+    external: true
+    name: coudai-swecostsytemupdates_upload_data

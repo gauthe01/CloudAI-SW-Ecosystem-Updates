@@ -1,0 +1,1 @@
+Release status update: partner validation risk is now blocked.

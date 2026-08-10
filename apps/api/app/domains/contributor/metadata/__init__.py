@@ -1,0 +1,1 @@
+"""Contributor partner metadata domain."""

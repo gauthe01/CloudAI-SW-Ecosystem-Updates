@@ -1,0 +1,394 @@
+"use client";
+
+import { Dispatch, ReactNode, SetStateAction, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+
+import { AccountMenu } from "@/components/navigation/AccountMenu";
+import { AppTopNav } from "@/components/navigation/AppTopNav";
+import { PartnerNavSelect } from "@/components/navigation/PartnerNavSelect";
+import { PresenterPartnerNavSelect } from "@/components/navigation/PresenterPartnerNavSelect";
+import { SectionTabs } from "@/components/navigation/SectionTabs";
+import { AdminControlPlanePanel } from "@/features/admin/AdminControlPlanePanel";
+import { AdminIntegrationsPanel } from "@/features/admin/AdminIntegrationsPanel";
+import { AdminPartnersPanel } from "@/features/admin/AdminPartnersPanel";
+import { AdminKnowledgeUploadPanel } from "@/features/admin/AdminKnowledgeUploadPanel";
+import { AdminSourceApprovalsPanel } from "@/features/admin/AdminSourceApprovalsPanel";
+import { AdminTeamPanel } from "@/features/admin/AdminTeamPanel";
+import {
+  AccountView,
+  AuthContext,
+  getCurrentAuthContext,
+  logout,
+  switchActiveView,
+} from "@/features/auth/auth-api";
+import { ContributorPartnerSelectionPanel } from "@/features/contributor/ContributorPartnerSelectionPanel";
+import {
+  ContributorPartner,
+  listContributorPartners,
+} from "@/features/contributor/contributor-partners-api";
+import { PresenterWorkspacePanel } from "@/features/presenter/PresenterWorkspacePanel";
+import {
+  PresenterPartner,
+  listPresenterPartners,
+} from "@/features/presenter/presenter-api";
+import {
+  adminSectionDisplayLabels,
+  sectionLabels,
+  viewLabels,
+  viewOrder,
+} from "@/features/shell/navigation";
+import { productName } from "@/lib/product";
+import { routes } from "@/lib/routes";
+
+export function AccountViewShell() {
+  const router = useRouter();
+  const [authContext, setAuthContext] = useState<AuthContext | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [switchingView, setSwitchingView] = useState<AccountView | null>(null);
+  const [activeSection, setActiveSection] = useState("Partner Metadata");
+  const [error, setError] = useState<string | null>(null);
+  const [contributorPartners, setContributorPartners] = useState<ContributorPartner[]>([]);
+  const [selectedContributorPartnerId, setSelectedContributorPartnerId] = useState<string | null>(
+    null,
+  );
+  const [contributorPartnersLoading, setContributorPartnersLoading] = useState(false);
+  const [contributorPartnersError, setContributorPartnersError] = useState<string | null>(null);
+  const [presenterCycle, setPresenterCycle] = useState(currentCycle());
+  const [presenterPartners, setPresenterPartners] = useState<PresenterPartner[]>([]);
+  const [selectedPresenterPartnerIds, setSelectedPresenterPartnerIds] = useState<string[]>([]);
+  const [presenterPartnersLoading, setPresenterPartnersLoading] = useState(false);
+  const [adminHeaderAction, setAdminHeaderAction] = useState<ReactNode | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    getCurrentAuthContext()
+      .then((context) => {
+        if (mounted) {
+          setAuthContext(context);
+        }
+      })
+      .catch(() => {
+        router.replace(routes.login);
+      })
+      .finally(() => {
+        if (mounted) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [router]);
+
+  const orderedViews = useMemo(() => {
+    if (!authContext) {
+      return [];
+    }
+    return viewOrder.filter((view) => authContext.available_views.includes(view));
+  }, [authContext]);
+
+  useEffect(() => {
+    if (authContext?.active_view !== "contributor") {
+      return;
+    }
+
+    let mounted = true;
+    setContributorPartnersLoading(true);
+    setContributorPartnersError(null);
+
+    listContributorPartners()
+      .then((partners) => {
+        if (!mounted) {
+          return;
+        }
+        setContributorPartners(partners);
+        setSelectedContributorPartnerId((currentPartnerId) => {
+          if (currentPartnerId && partners.some((partner) => partner.partner_id === currentPartnerId)) {
+            return currentPartnerId;
+          }
+          return partners.length === 1 ? partners[0].partner_id : null;
+        });
+      })
+      .catch((error) => {
+        if (mounted) {
+          setContributorPartnersError(
+            error instanceof Error ? error.message : "Unable to load assigned partners.",
+          );
+          setContributorPartners([]);
+          setSelectedContributorPartnerId(null);
+        }
+      })
+      .finally(() => {
+        if (mounted) {
+          setContributorPartnersLoading(false);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [authContext?.active_view]);
+
+  useEffect(() => {
+    if (authContext?.active_view !== "presenter") {
+      return;
+    }
+
+    let mounted = true;
+    setPresenterPartnersLoading(true);
+
+    listPresenterPartners(presenterCycle)
+      .then((partners) => {
+        if (!mounted) {
+          return;
+        }
+        setPresenterPartners(partners);
+        setSelectedPresenterPartnerIds((currentPartnerIds) =>
+          currentPartnerIds.filter((partnerId) =>
+            partners.some((partner) => partner.partner_id === partnerId),
+          ),
+        );
+      })
+      .catch(() => {
+        if (mounted) {
+          setPresenterPartners([]);
+          setSelectedPresenterPartnerIds([]);
+        }
+      })
+      .finally(() => {
+        if (mounted) {
+          setPresenterPartnersLoading(false);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [authContext?.active_view, presenterCycle]);
+
+  async function handleSwitchView(view: AccountView) {
+    if (!authContext || view === authContext.active_view) {
+      return;
+    }
+
+    setError(null);
+    setSwitchingView(view);
+    try {
+      const nextContext = await switchActiveView(view);
+      setAuthContext(nextContext);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Unable to switch account view.");
+    } finally {
+      setSwitchingView(null);
+    }
+  }
+
+  async function handleLogout() {
+    setError(null);
+    try {
+      await logout();
+    } finally {
+      router.replace(routes.login);
+    }
+  }
+
+  if (loading) {
+    return (
+      <main className="workspace-shell loading-shell">
+        <p>Loading workspace</p>
+      </main>
+    );
+  }
+
+  if (!authContext) {
+    return null;
+  }
+
+  const activeView = authContext.active_view;
+  const activeSections = sectionLabels[activeView];
+  const selectedSection = activeSections.includes(activeSection) ? activeSection : activeSections[0];
+  const selectedSectionLabel =
+    activeView === "admin"
+      ? adminSectionDisplayLabels[selectedSection] ?? selectedSection
+      : selectedSection;
+  const isContributorView = activeView === "contributor";
+  const isPresenterView = activeView === "presenter";
+  const isAdminConsoleHome = activeView === "admin" && selectedSection === "Admin Console";
+  const isContributorPartnerSelection =
+    isContributorView && contributorPartners.length > 1 && !selectedContributorPartnerId;
+  const contributorNavPartners = contributorPartners.map((partner) => ({
+    id: partner.partner_id,
+    name: partner.name,
+    description: partner.description,
+    updatesCount: partner.updates_count,
+  }));
+  const presenterNavPartners = presenterPartners.map((partner) => ({
+    id: partner.partner_id,
+    name: partner.name,
+    description: partner.description,
+    updatesCount: partner.approved_updates_count,
+  }));
+
+  return (
+    <main
+      className={
+        isContributorPartnerSelection
+          ? "workspace-shell contributor-view-shell contributor-selection-shell"
+          : isContributorView
+            ? "workspace-shell contributor-view-shell"
+            : "workspace-shell"
+      }
+    >
+      <AppTopNav
+        eyebrow={productName}
+        context={
+          isContributorView && selectedContributorPartnerId && contributorPartners.length ? (
+            <PartnerNavSelect
+              disabled={contributorPartnersLoading}
+              partners={contributorNavPartners}
+              selectedPartnerId={selectedContributorPartnerId}
+              onSelect={setSelectedContributorPartnerId}
+            />
+          ) : isPresenterView && presenterPartners.length ? (
+            <PresenterPartnerNavSelect
+              disabled={presenterPartnersLoading}
+              partners={presenterNavPartners}
+              selectedPartnerIds={selectedPresenterPartnerIds}
+              onApply={setSelectedPresenterPartnerIds}
+            />
+          ) : null
+        }
+        actions={
+          <AccountMenu
+            activeViewId={activeView}
+            email={authContext.user.email}
+            name={authContext.user.display_name}
+            onSignOut={handleLogout}
+            onSwitchView={handleSwitchView}
+            switchingViewId={switchingView}
+            views={orderedViews.map((view) => ({ id: view, label: viewLabels[view] }))}
+          />
+        }
+      />
+
+      {error ? <p className="workspace-error">{error}</p> : null}
+
+      {!isContributorView && activeView !== "admin" ? (
+        <SectionTabs
+          activeTabId={selectedSection}
+          ariaLabel={`${viewLabels[activeView]} sections`}
+          onChange={setActiveSection}
+          tabs={activeSections.map((section) => ({ id: section, label: section }))}
+        />
+      ) : null}
+
+      <section
+        className={
+          isContributorPartnerSelection
+            ? "workspace-content contributor-workspace-content contributor-selection-content"
+            : isContributorView
+            ? "workspace-content contributor-workspace-content"
+            : isAdminConsoleHome
+              ? "workspace-content admin-console-content"
+              : "workspace-content"
+        }
+        aria-labelledby="workspace-content-title"
+      >
+        {isContributorView ? (
+          <>
+            <h2 id="workspace-content-title" className="visually-hidden">
+              Contributor Dashboard
+            </h2>
+            <ContributorPartnerSelectionPanel
+              error={contributorPartnersError}
+              loading={contributorPartnersLoading}
+              onSelectPartner={setSelectedContributorPartnerId}
+              partners={contributorPartners}
+              selectedPartnerId={selectedContributorPartnerId}
+              userName={authContext.user.display_name}
+            />
+          </>
+        ) : (
+          <>
+            {activeView === "admin" && !isAdminConsoleHome ? (
+              <div className="admin-module-actions-row">
+                <button
+                  className="ghost-action"
+                  type="button"
+                  onClick={() => setActiveSection("Admin Console")}
+                >
+                  Back to Admin Console
+                </button>
+                {adminHeaderAction}
+              </div>
+            ) : null}
+            <div className="workspace-heading-row">
+              <div>
+                <p className="eyebrow">Current Workspace</p>
+                <h2 id="workspace-content-title">
+                  {activeView === "admin" && !isAdminConsoleHome
+                    ? `Admin Console - ${selectedSectionLabel}`
+                    : selectedSectionLabel}
+                </h2>
+              </div>
+            </div>
+            {isAdminConsoleHome ? (
+              <AdminControlPlanePanel onSelectModule={setActiveSection} />
+            ) : isPresenterView ? (
+              <PresenterWorkspacePanel
+                cycle={presenterCycle}
+                onCycleChange={setPresenterCycle}
+                onPartnerSelectionChange={setSelectedPresenterPartnerIds}
+                onSectionChange={setActiveSection}
+                partners={presenterPartners}
+                section={selectedSection}
+                selectedPartnerIds={selectedPresenterPartnerIds}
+              />
+            ) : (
+              renderWorkspaceContent(activeView, selectedSection, setAdminHeaderAction)
+            )}
+          </>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function renderWorkspaceContent(
+  activeView: AccountView,
+  selectedSection: string,
+  setAdminHeaderAction: Dispatch<SetStateAction<ReactNode | null>>,
+) {
+  if (activeView === "admin" && selectedSection === "Team") {
+    return <AdminTeamPanel onHeaderActionChange={setAdminHeaderAction} />;
+  }
+
+  if (activeView === "admin" && selectedSection === "Partners") {
+    return <AdminPartnersPanel onHeaderActionChange={setAdminHeaderAction} />;
+  }
+
+  if (activeView === "admin" && selectedSection === "Knowledge Upload") {
+    return <AdminKnowledgeUploadPanel />;
+  }
+
+  if (activeView === "admin" && selectedSection === "Global Integrations") {
+    return <AdminIntegrationsPanel />;
+  }
+
+  if (activeView === "admin" && selectedSection === "Source Approvals") {
+    return <AdminSourceApprovalsPanel />;
+  }
+
+  return (
+    <div className="workspace-empty-state">
+      <span>{viewLabels[activeView]}</span>
+      <strong>{selectedSection}</strong>
+    </div>
+  );
+}
+
+function currentCycle(): string {
+  return new Date().toISOString().slice(0, 7);
+}

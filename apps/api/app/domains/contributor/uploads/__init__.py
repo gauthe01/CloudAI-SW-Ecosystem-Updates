@@ -1,0 +1,1 @@
+"""Contributor upload domain."""

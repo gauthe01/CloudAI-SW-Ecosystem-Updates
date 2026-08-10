@@ -1,0 +1,55 @@
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Reference-only archive of the old prototype.
+# The fresh build must not import from, copy from, or require this folder.
+Gold/
+gold/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Node/Next.js
+node_modules/
+.next/
+out/
+dist/
+coverage/
+
+# Local secrets and credentials
+.env
+.env.local
+*.key
+*service-account*.json
+arm-platform-key.json
+certs/*
+!certs/README.md
+
+# Local databases and SQLite sidecars
+db/*.db
+db/*.db-*
+db/*.bak
+db/.fuse_hidden*
+db/backups/
+
+# Generated artifacts
+outputs/
+.codex-backups/
+var/uploads/
+var/*.log
+var/*.pid
+tmp_doc_build/
+*.docx
+*.pptx
+*.xlsx
+*.pdf
+
+# OS/editor noise
+.DS_Store

@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Cloud AI Software Ecosystem Updates — Technical Architecture Flow v4</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #F0F2F5; color: #1A1A2E; font-size: 12px; }
+h2.sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
+.page { max-width: 1300px; margin: 0 auto; padding: 24px 20px 60px; }
+.legend { display:flex; gap:12px; flex-wrap:wrap; padding:10px 14px; background:#fff; border-radius:8px; border:1px solid #DDE3EC; margin-bottom:28px; font-size:10.5px; }
+.li { display:flex; align-items:center; gap:5px; color:#4A5568; font-weight:500; }
+.ld { width:11px; height:11px; border-radius:2px; flex-shrink:0; }
+.dot { display:inline-flex; align-items:center; justify-content:center; border-radius:50%; width:14px; height:14px; font-size:8px; font-weight:900; flex-shrink:0; }
+.dok  { background:#43A047; color:#fff; }
+.dwrn { background:#FB8C00; color:#fff; }
+.derr { background:#EF5350; color:#fff; }
+.section-hdr { display:flex; align-items:center; gap:10px; font-size:10px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:#64748B; margin:32px 0 12px; padding-bottom:6px; border-bottom:2px solid #DDE3EC; }
+.section-hdr::before { content:''; flex:none; width:4px; height:16px; border-radius:2px; background:#0091BD; }
+.row { display:flex; align-items:flex-start; gap:0; }
+.arrow-right { display:flex; align-items:center; flex-shrink:0; color:#B0BEC5; font-size:18px; padding:0 6px; margin-top:18px; }
+.arrow-down { display:flex; justify-content:center; color:#B0BEC5; font-size:18px; padding:4px 0; margin-left:20px; }
+.arrow-down-label { display:flex; flex-direction:column; align-items:center; color:#94A3B8; font-size:9px; padding:2px 0; }
+.n { border-radius:8px; padding:11px 13px; line-height:1.4; cursor:pointer; transition:box-shadow .15s, transform .15s; flex-shrink:0; position:relative; }
+.n:hover { transform:translateY(-2px); box-shadow:0 6px 18px rgba(0,0,0,.13); }
+.nt { font-weight:700; font-size:11.5px; margin-bottom:3px; }
+.ns { font-size:10px; color:inherit; opacity:.8; margin-bottom:2px; }
+.nm { font-size:9.5px; font-family:'SF Mono',Menlo,monospace; opacity:.8; margin-top:4px; }
+.nb { display:inline-block; border-radius:3px; padding:1px 6px; font-size:8.5px; margin-top:4px; font-family:'SF Mono',monospace; }
+.nb-ok   { background:#E8F5E9; color:#1B5E20; }
+.nb-warn { background:#FFF3E0; color:#E65100; border:1px solid #FFB74D; }
+.nb-red  { background:#FFEBEE; color:#B71C1C; border:1px dashed #EF5350; }
+.nb-blue { background:#E3F2FD; color:#1565C0; }
+.status-row { display:flex; gap:3px; margin-top:5px; flex-wrap:wrap; }
+.n-entry  { background:#EEF2FF; border:1.5px solid #7986CB; color:#1A237E; }
+.n-auth   { background:#E8F4FD; border:1.5px solid #64B5F6; color:#0D47A1; }
+.n-flow   { background:#FFF8E1; border:1.5px solid #FFD54F; color:#4E342E; }
+.n-agent  { background:#E8F5E9; border:1.5px solid #66BB6A; color:#1B5E20; }
+.n-db     { background:#F3E5F5; border:1.5px solid #BA68C8; color:#4A148C; }
+.n-out    { background:#FFF3E0; border:1.5px solid #FFA726; color:#BF360C; }
+.n-learn  { background:#E0F7FA; border:1.5px solid #26C6DA; color:#006064; }
+.n-open   { background:#FFEBEE; border:2px dashed #EF5350; color:#B71C1C; }
+.diam-wrap { flex-shrink:0; display:flex; flex-direction:column; align-items:center; }
+.diam-box { width:96px; height:96px; transform:rotate(45deg); background:#FFF8E1; border:1.5px solid #FFD54F; border-radius:4px; display:flex; align-items:center; justify-content:center; cursor:pointer; transition:box-shadow .15s; }
+.diam-box:hover { box-shadow:0 4px 14px rgba(0,0,0,.13); }
+.diam-inner { transform:rotate(-45deg); font-size:10px; font-weight:700; color:#4E342E; padding:6px; line-height:1.3; }
+.diam-labels { display:flex; justify-content:space-between; width:130px; font-size:9px; color:#94A3B8; font-weight:700; margin-top:4px; }
+.tip { position:fixed; background:#1E2A3A; color:#E8EDF2; padding:12px 15px; border-radius:9px; font-size:10.5px; max-width:300px; line-height:1.6; z-index:9999; pointer-events:none; opacity:0; transition:opacity .12s; box-shadow:0 6px 24px rgba(0,0,0,.35); }
+.tip.show { opacity:1; }
+.tip strong { color:#90CAF9; display:block; margin-bottom:5px; font-size:11.5px; }
+.tip .tok  { color:#A5D6A7; font-size:9.5px; display:block; margin-top:4px; }
+.tip .twrn { color:#FFB74D; font-size:9.5px; display:block; margin-top:3px; }
+.tip .tred { color:#EF9A9A; font-size:9.5px; display:block; margin-top:3px; }
+.tip code  { background:rgba(255,255,255,.12); padding:1px 5px; border-radius:3px; font-size:9px; }
+.group { border:1.5px solid #DDE3EC; border-radius:10px; padding:14px; margin:12px 0; background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.05); }
+.group-title { font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:#64748B; margin-bottom:12px; display:flex; align-items:center; gap:6px; }
+.group-title::before { content:''; display:block; width:3px; height:14px; border-radius:2px; background:#0091BD; }
+.oq-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px; }
+.oq-card { background:#FFEBEE; border-left:3px solid #EF5350; border-radius:6px; padding:10px 12px; font-size:10px; line-height:1.6; }
+.oq-card h4 { font-weight:700; color:#B71C1C; margin-bottom:2px; font-size:10.5px; }
+.tech-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:12px; }
+.tech-card { background:#F8FAFC; border:1px solid #DDE3EC; border-radius:7px; padding:10px 12px; font-size:10px; line-height:1.7; }
+.tech-card h4 { font-weight:700; font-size:10.5px; margin-bottom:4px; }
+</style>
+</head>
+<body>
+<h2 class="sr-only">Cloud AI Software Ecosystem Updates — Full Technical Architecture Flow v4</h2>
+<div class="page">
+
+<div style="margin-bottom:20px;">
+  <div style="font-size:20px;font-weight:800;color:#002B49;margin-bottom:4px;">Cloud AI Software Ecosystem Updates</div>
+  <div style="font-size:12px;color:#64748B;">Technical Architecture Flow · v4 · Generated June 2026</div>
+</div>
+
+<div class="legend">
+  <div class="li"><div class="ld" style="background:#EEF2FF;border:1.5px solid #7986CB;"></div> Entry</div>
+  <div class="li"><div class="ld" style="background:#E8F4FD;border:1.5px solid #64B5F6;"></div> Auth</div>
+  <div class="li"><div class="ld" style="background:#FFF8E1;border:1.5px solid #FFD54F;"></div> Flow / UI</div>
+  <div class="li"><div class="ld" style="background:#E8F5E9;border:1.5px solid #66BB6A;"></div> AI Agent (OpenAI)</div>
+  <div class="li"><div class="ld" style="background:#F3E5F5;border:1.5px solid #BA68C8;"></div> Database</div>
+  <div class="li"><div class="ld" style="background:#FFF3E0;border:1.5px solid #FFA726;"></div> Output</div>
+  <div class="li"><div class="ld" style="background:#E0F7FA;border:1.5px solid #26C6DA;"></div> Learning Loop</div>
+  <div class="li"><div class="ld" style="background:#FFEBEE;border:2px dashed #EF5350;"></div> Open decision</div>
+  <div class="li"><span class="dot dok">✓</span> Confirmed</div>
+  <div class="li"><span class="dot dwrn">!</span> Needs IT</div>
+  <div class="li"><span class="dot derr">⛔</span> Needs procurement</div>
+  <div class="li" style="margin-left:auto;color:#94A3B8;font-size:10px;">Hover any node for detail</div>
+</div>
+
+<!-- SECTION 1 -->
+<div class="section-hdr">1 · Entry &amp; Authentication</div>
+<div class="group">
+  <div class="row" style="align-items:center;">
+    <div class="n n-entry" style="width:150px;" data-tip="<strong>Landing Screen</strong>Static portal entry page. No auth required to view. Redirects to Login on action.<br><code>FastAPI + Jinja2</code><span class='tok'>✓ No external dependency</span>">
+      <div class="nt">Landing Screen</div><div class="nm">FastAPI · Jinja2</div><div class="status-row"><span class="dot dok">✓</span></div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="n n-auth" style="width:210px;" data-tip="<strong>Login Page</strong>Dev: SQLite session cookie.<br>Prod: Azure AD SSO → JWT decode → role from token.<br><code>python-jose · JWT · azure-identity</code><span class='tok'>✓ Dev auth confirmed</span><span class='twrn'>⚠ Prod Azure AD: needs IT app registration + tenant ID</span>">
+      <div class="nt">Login Page</div><div class="ns">Dev: SQLite session cookie</div><div class="ns">Prod: Azure AD SSO → JWT</div><div class="nm">python-jose · azure-identity</div><div class="status-row"><span class="dot dok">✓</span><span class="dot dwrn">!</span></div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="diam-wrap">
+      <div class="diam-box" data-tip="<strong>Role Detection</strong>Role from users table (dev) or Azure AD group (prod).<br>Values: contributor | manager | admin<br><code>SELECT role FROM users WHERE employee_id=?</code>">
+        <div class="diam-inner">Role?</div>
+      </div>
+      <div class="diam-labels"><span>contributor</span><span>manager</span><span>admin</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 2 -->
+<div class="section-hdr">2 · Contributor Path</div>
+<div class="group">
+  <div class="group-title">2a · Partner Setup</div>
+  <div class="row" style="align-items:center;flex-wrap:wrap;gap:8px;">
+    <div class="diam-wrap">
+      <div class="diam-box" data-tip="<strong>Existing Partner?</strong>Checks if user has a partner_slot assigned in users table.<br><code>SELECT partner_slot FROM users WHERE employee_id=?</code>">
+        <div class="diam-inner">Existing Partner?</div>
+      </div>
+      <div class="diam-labels"><span>NO</span><span style="margin-left:30px;">YES</span></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-left:24px;">
+      <div style="display:flex;align-items:center;gap:0;">
+        <div style="font-size:9px;color:#43A047;font-weight:700;width:38px;">YES →</div>
+        <div class="n n-flow" style="width:160px;" data-tip="<strong>Partner Selection</strong>Dropdown of partners assigned to this contributor's slot.<br><code>GET /home · PARTNER_NAMES dict</code><span class='tok'>✓ Built</span>">
+          <div class="nt">Partner Selection</div><div class="nm">PARTNER_NAMES · session</div><div class="status-row"><span class="dot dok">✓</span></div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:0;">
+        <div style="font-size:9px;color:#EF5350;font-weight:700;width:38px;">NO →</div>
+        <div class="n n-flow" style="width:230px;" data-tip="<strong>New Partner Setup</strong>Contributor enters partner name. Admin assigns workstreams + sub-categories.<br><code>INSERT INTO partners · INSERT INTO workstreams</code><span class='tok'>✓ Built — 3-question guided setup</span>">
+          <div class="nt">New Partner name</div><div class="ns">+ Add workstreams &amp; sub-categories</div><div class="nm">POST /admin/partners · POST /workstreams</div><div class="status-row"><span class="dot dok">✓</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="arrow-right" style="margin-top:0;">→</div>
+    <div class="n n-flow" style="width:200px;" data-tip="<strong>Contributor Home Dashboard</strong>6-tab input hub per workstream + sticky workstream rail + pending review section always visible below hub.<br>Tabs: Overview · Notes &amp; files · Slack · Google Drive · Jira · SharePoint<br><code>GET /home · home.html</code><span class='tok'>✓ Fully built</span>">
+      <div class="nt">Contributor Home Dashboard</div><div class="ns">6-tab hub · workstream rail</div><div class="ns">Pending review always visible</div><div class="nm">GET /home · home.html</div><div class="status-row"><span class="dot dok">✓</span></div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="diam-wrap">
+      <div class="diam-box" data-tip="<strong>Type of Update?</strong>Manual = user-initiated via hub tabs.<br>Agentic = background bots watch integrations.">
+        <div class="diam-inner">Type of update?</div>
+      </div>
+      <div class="diam-labels"><span>Manual</span><span>Agentic</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="group">
+  <div class="group-title">2b · Manual Input Path</div>
+  <div class="row" style="align-items:flex-start;flex-wrap:wrap;gap:8px;">
+    <div class="diam-wrap">
+      <div class="diam-box" data-tip="<strong>With Agent?</strong>NO = user types free-text directly.<br>YES = upload files + prompt → Agent 1 interprets.<br><code>POST /classify · POST /submit-update</code>">
+        <div class="diam-inner">With Agent?</div>
+      </div>
+      <div class="diam-labels"><span>NO</span><span style="margin-left:30px;">YES</span></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-left:24px;">
+      <div style="display:flex;align-items:flex-start;gap:0;">
+        <div style="font-size:9px;color:#43A047;font-weight:700;width:38px;margin-top:14px;">NO →</div>
+        <div class="n n-flow" style="width:240px;" data-tip="<strong>Direct Update</strong>User types free-text in Notes &amp; files tab. Saved to staged_updates, status=pending.<br><code>POST /submit-update · source_type=notes</code><span class='tok'>✓ Confirmed</span>">
+          <div class="nt">Direct Update</div><div class="ns">User types free-text in hub tab</div><div class="nm">POST /submit-update · status=pending</div><div class="status-row"><span class="dot dok">✓</span></div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:0;">
+        <div style="font-size:9px;color:#EF5350;font-weight:700;width:38px;margin-top:14px;">YES →</div>
+        <div class="n n-agent" style="width:320px;" data-tip="<strong>Agent 1 — Classifier</strong>User uploads files (.docx, .pdf, .txt, images via vision), pastes chat logs or notes. gpt-4o interprets → returns workstream, summary, source_type, confidence score.<br>Confidence logic: &gt;0.80 auto-stage · 0.60–0.80 ask user · &lt;0.60 reject + manual input.<br><code>gpt-4o · POST /classify · structured JSON output</code><span class='tok'>✓ OpenAI approved by ARM</span><span class='tred'>Open: exact confidence threshold values?</span>">
+          <div class="nt">🤖 Agent 1 — Classifier</div><div class="ns">Upload files / chats / notes + prompt</div><div class="ns">OpenAI interprets → structured draft</div><div class="nm">gpt-4o · POST /classify · structured output</div><div class="nb nb-ok">File types: .docx .pdf .txt .png (vision)</div><div class="nb nb-red">confidence threshold logic ? (open)</div><div class="status-row"><span class="dot dok">✓</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="n n-db" style="width:210px;" data-tip="<strong>staged_updates table</strong>Central staging table. Both manual and agentic paths write here.<br>Columns: id, partner, partner_slot, workstream, summary, source_type, source_detail, submitted_by, cycle, status, created_at<br><code>INSERT INTO staged_updates</code><span class='tok'>✓ SQLite dev: built</span><span class='twrn'>⚠ PostgreSQL prod: needs IT approval</span>">
+      <div class="nt">staged_updates DB</div><div class="ns">status = pending</div><div class="nm">Dev: SQLite + aiosqlite</div><div class="nm">Prod: PostgreSQL + pgvector</div><div class="nb nb-ok">id · partner · workstream · summary</div><div class="nb nb-ok">source_type · source_detail · cycle</div><div class="status-row"><span class="dot dok">✓</span><span class="dot dwrn">!</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="group">
+  <div class="group-title">2c · Agentic Listening Path</div>
+  <div class="row" style="flex-wrap:wrap;gap:16px;align-items:flex-start;">
+    <div class="n n-agent" style="width:260px;" data-tip="<strong>Agent 2 — Slack Listener</strong>Slack Events API bot. Monitors partner channels. Batches messages → gpt-4o-mini classifies.<br><code>gpt-4o-mini · Slack Events API · OAuth2 Bot Token</code><span class='tok'>✓ OpenAI confirmed</span><span class='tred'>⛔ Needs Slack workspace admin: create OAuth app + scopes channels:history, app_mentions:read</span>">
+      <div class="nt">🤖 Agent 2 — Slack Listener</div><div class="ns">Monitors partner Slack channels</div><div class="nm">gpt-4o-mini · Slack Events API</div><div class="nb nb-blue">Scope: channels:history · app_mentions</div><div class="nb nb-red">⛔ OAuth: Slack workspace admin</div><div class="status-row"><span class="dot derr">⛔</span></div>
+    </div>
+    <div class="n n-agent" style="width:260px;" data-tip="<strong>Agent 3 — Google Drive Listener</strong>Drive Watch API push notifications. Watches shared partner folder for new/modified files → gpt-4o-mini classifies.<br><code>gpt-4o-mini · Drive Watch API · OAuth2</code><span class='tok'>✓ OpenAI confirmed</span><span class='tred'>⛔ Needs Google Workspace admin: OAuth app + drive.readonly scope</span>">
+      <div class="nt">🤖 Agent 3 — Google Drive Listener</div><div class="ns">Watches shared partner folder</div><div class="nm">gpt-4o-mini · Drive Watch API</div><div class="nb nb-blue">Scope: drive.readonly · push notifications</div><div class="nb nb-red">⛔ OAuth: Google Workspace admin</div><div class="status-row"><span class="dot derr">⛔</span></div>
+    </div>
+    <div class="n n-agent" style="width:260px;" data-tip="<strong>Agent 4 — SharePoint Listener</strong>Graph API webhook. Watches partner SharePoint site → gpt-4o-mini classifies document changes.<br><code>gpt-4o-mini · Graph API webhook</code><span class='tok'>✓ OpenAI confirmed</span><span class='tred'>⛔ Needs Microsoft 365 IT admin: app reg + Sites.Read.All, Files.Read.All</span>">
+      <div class="nt">🤖 Agent 4 — SharePoint Listener</div><div class="ns">Watches partner SharePoint site</div><div class="nm">gpt-4o-mini · Graph API webhook</div><div class="nb nb-blue">Scope: Sites.Read.All · Files.Read.All</div><div class="nb nb-red">⛔ OAuth: Microsoft 365 IT admin</div><div class="status-row"><span class="dot derr">⛔</span></div>
+    </div>
+  </div>
+  <div class="arrow-down">↓</div>
+  <div style="display:flex;align-items:flex-start;gap:16px;margin-top:8px;flex-wrap:wrap;">
+    <div class="n n-agent" style="width:280px;" data-tip="<strong>Deduplication Check</strong>Cosine similarity check against existing staged updates for same partner + workstream + cycle. ~85% threshold.<br><code>text-embedding-ada-002 · cosine similarity</code><span class='tred'>Open: duplicate → skip silently or surface with merge option?</span>">
+      <div class="nt">Deduplication Check</div><div class="ns">Cosine similarity ~85% threshold</div><div class="nm">text-embedding-ada-002 · cosine sim</div><div class="nb nb-red">skip silently or surface ? (open)</div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="n n-agent" style="width:280px;" data-tip="<strong>Auto-generate Update Draft</strong>Each channel agent generates structured draft via gpt-4o-mini with workstream-specific system prompt. Output: workstream, summary, source_type.<br><code>gpt-4o-mini · structured JSON output</code>">
+      <div class="nt">Auto-generate Update Draft</div><div class="ns">Workstream-specific system prompt</div><div class="nm">gpt-4o-mini · structured JSON output</div><div class="nb nb-blue">Output: workstream · summary · source_type</div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="n n-db" style="width:160px;" data-tip="<strong>staged_updates table</strong>Same table as manual path. status=pending.">
+      <div class="nt">staged_updates DB</div><div class="ns">status = pending</div><div class="nm">Same table as manual path</div><div class="status-row"><span class="dot dok">✓</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 3 -->
+<div class="section-hdr">3 · Human Approval Loop</div>
+<div class="group">
+  <div class="group-title">3a · Review on Contributor Home</div>
+  <div style="margin-bottom:12px;font-size:10.5px;color:#4A5568;">Pending Review section is always visible below the 6-tab hub on Contributor Home.</div>
+  <div class="row" style="align-items:flex-start;gap:0;flex-wrap:wrap;">
+    <div class="n n-flow" style="width:220px;" data-tip="<strong>Pending Review Section</strong>Lists all staged_updates with status=pending for this partner + cycle. Always visible below hub.<span class='tok'>✓ Built</span>">
+      <div class="nt">Pending Review Section</div><div class="ns">Always visible below hub</div><div class="nm">SELECT staged WHERE status=pending</div><div class="status-row"><span class="dot dok">✓</span></div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="diam-wrap">
+      <div class="diam-box" data-tip="<strong>Human Decision</strong>Three actions per staged card: Approve · Dismiss · Edit">
+        <div class="diam-inner">Human Decision</div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-left:24px;">
+      <div style="display:flex;align-items:flex-start;gap:8px;">
+        <div style="font-size:9px;color:#43A047;font-weight:700;width:70px;margin-top:14px;">✓ APPROVE →</div>
+        <div class="n n-flow" style="width:220px;" data-tip="<strong>Approve</strong>status → approved. Triggers Modes of Documentation pipeline.<br><code>POST /staged/{id}/approve</code><span class='tok'>✓ Built</span>">
+          <div class="nt">Approve</div><div class="ns">status → approved · triggers docs pipeline</div><div class="nm">POST /staged/{id}/approve</div><div class="status-row"><span class="dot dok">✓</span></div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:8px;">
+        <div style="font-size:9px;color:#EF5350;font-weight:700;width:70px;margin-top:14px;">✗ DISMISS →</div>
+        <div class="n n-flow" style="width:220px;" data-tip="<strong>Dismiss</strong>status → dismissed. Signal stored for agent learning.<br><code>POST /staged/{id}/dismiss</code><span class='tok'>✓ Built</span>">
+          <div class="nt">Dismiss</div><div class="ns">status → dismissed · signal stored</div><div class="nm">POST /staged/{id}/dismiss</div><div class="status-row"><span class="dot dok">✓</span></div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:8px;">
+        <div style="font-size:9px;color:#FB8C00;font-weight:700;width:70px;margin-top:14px;">✎ EDIT →</div>
+        <div class="n n-open" style="width:260px;" data-tip="<strong>Edit</strong>Opens inline editor. User modifies summary / workstream / source_type → re-staged as pending.<br><code>POST /staged/{id}/edit</code><span class='tred'>Open: re-run AI classification after edit? Recommendation: optional Re-classify button.</span>">
+          <div class="nt">Edit (inline modal)</div><div class="ns">Modify → re-staged as pending</div><div class="nm">POST /staged/{id}/edit</div><div class="nb nb-red">re-classify after edit ? (open)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 4 -->
+<div class="section-hdr">4 · Continuous Learning Loop</div>
+<div class="group">
+  <div class="row" style="align-items:flex-start;gap:16px;flex-wrap:wrap;">
+    <div class="n n-learn" style="width:260px;" data-tip="<strong>Signal Collection</strong>Every approve/dismiss/edit stored as a signal with metadata: partner, workstream, source_type, agent_id.<br><code>INSERT INTO agent_signals</code>">
+      <div class="nt">Signal Collection</div><div class="ns">Approve / dismiss / edit signals</div><div class="ns">Per agent · workstream · partner</div><div class="nm">INSERT INTO agent_signals</div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="n n-learn" style="width:280px;" data-tip="<strong>14-Day Learning Cron</strong>APScheduler runs every 14 days. For each channel agent, reads recent signals → asks gpt-4o to rewrite the workstream system prompt.<br><code>APScheduler · gpt-4o · skills.md rewrite</code><span class='tok'>✓ APScheduler confirmed</span><span class='tred'>Open: auto-deploy prompt or manual review first?</span>">
+      <div class="nt">14-Day Learning Cron</div><div class="ns">APScheduler reads signals</div><div class="ns">gpt-4o rewrites workstream system prompts</div><div class="nm">APScheduler · gpt-4o · skills.md</div><div class="nb nb-red">auto-deploy or manual review ? (open)</div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="n n-learn" style="width:260px;" data-tip="<strong>Per-Agent Prompt Update</strong>Each channel agent learns from its own signals independently.<br><code>UPDATE agent_prompts WHERE agent_id=?</code>">
+      <div class="nt">Per-Agent Prompt Update</div><div class="ns">Slack signals → Agent 2 prompt</div><div class="ns">GDrive signals → Agent 3 prompt</div><div class="ns">SharePoint signals → Agent 4 prompt</div><div class="nm">UPDATE agent_prompts WHERE agent_id=?</div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 5 -->
+<div class="section-hdr">5 · Modes of Documentation (Output Pipeline)</div>
+<div style="font-size:10.5px;color:#4A5568;margin-bottom:12px;">Triggered on approval. Sequential and gated — each output requires the previous first.</div>
+
+<div class="group">
+  <div class="group-title">5a · Trigger</div>
+  <div class="row" style="align-items:center;gap:0;">
+    <div class="n n-out" style="width:250px;" data-tip="<strong>Approval Trigger</strong>When status flips to 'approved', docs pipeline fires.<br><span class='tred'>Open: 'all approved' = cycle-level or per-partner? Recommendation: per-partner.</span>">
+      <div class="nt">Update Approved → Trigger</div><div class="ns">status=approved fires pipeline</div><div class="nm">WHERE status='approved' AND cycle=current</div><div class="nb nb-red">'all approved' gate: cycle or per-partner ? (open)</div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="n n-out" style="width:200px;">
+      <div class="nt">Modes of Documentation</div><div class="ns">Sequential: Word → PPT → Email</div>
+    </div>
+  </div>
+</div>
+
+<div class="group">
+  <div class="group-title">5b · Agent 5 — Word Document</div>
+  <div class="row" style="align-items:flex-start;gap:16px;flex-wrap:wrap;">
+    <div class="n n-agent" style="width:320px;" data-tip="<strong>Agent 5 — Word Doc Generator</strong>Reads all approved updates for partner + cycle. gpt-4o generates content. Fills ARM Word template via python-docx.<br><code>gpt-4o · python-docx · GET /generate-doc</code><span class='tok'>✓ python-docx confirmed</span><span class='tred'>Open: inline edit on dashboard or download only? Recommendation: download first, inline in V2.</span>">
+      <div class="nt">🤖 Agent 5 — Word Doc Generator</div><div class="ns">Reads approved updates · fills ARM template</div><div class="nm">gpt-4o · python-docx · GET /generate-doc</div><div class="nb nb-red">inline edit or download ? (open)</div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="n n-out" style="width:240px;">
+      <div class="nt">Word Document (.docx)</div><div class="ns">ARM template format · downloadable</div><div class="nm">GET /download-doc</div><div class="status-row"><span class="dot dok">✓</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="arrow-down-label"><div>↓ if all approved</div></div>
+
+<div class="group">
+  <div class="group-title">5c · Agent 6 — PowerPoint</div>
+  <div class="row" style="align-items:flex-start;gap:16px;flex-wrap:wrap;">
+    <div class="n n-agent" style="width:320px;" data-tip="<strong>Agent 6 — PowerPoint Generator</strong>Triggered after Word doc + all approved. Fills ARM slide template via python-pptx.<br><code>gpt-4o · python-pptx · GET /generate-ppt</code><span class='tok'>✓ python-pptx confirmed</span>">
+      <div class="nt">🤖 Agent 6 — PowerPoint Generator</div><div class="ns">Fills ARM slide template</div><div class="nm">gpt-4o · python-pptx · GET /generate-ppt</div><div class="status-row"><span class="dot dok">✓</span></div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="n n-out" style="width:240px;">
+      <div class="nt">PowerPoint (.pptx)</div><div class="ns">ARM slide format · user reviews + edits</div><div class="nm">GET /download-ppt</div><div class="status-row"><span class="dot dok">✓</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="arrow-down-label"><div>↓ if all approved</div></div>
+
+<div class="group">
+  <div class="group-title">5d · Agent 7 — Executive Email</div>
+  <div class="row" style="align-items:flex-start;gap:16px;flex-wrap:wrap;">
+    <div class="n n-agent" style="width:320px;" data-tip="<strong>Agent 7 — Executive Email Generator</strong>gpt-4o generates executive summary email. Preview modal → user confirms before send. Uses Microsoft Graph API Mail.Send.<br><code>gpt-4o · Graph API · GET /generate-email</code><span class='tok'>✓ gpt-4o confirmed</span><span class='twrn'>⚠ Graph API Mail.Send: needs IT app registration</span>">
+      <div class="nt">🤖 Agent 7 — Executive Email</div><div class="ns">gpt-4o generates summary · preview modal</div><div class="ns">User confirms before send</div><div class="nm">gpt-4o · Graph API · GET /generate-email</div><div class="status-row"><span class="dot dok">✓</span><span class="dot dwrn">!</span></div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="n n-out" style="width:240px;">
+      <div class="nt">Executive Email</div><div class="ns">ARM format · preview before send</div><div class="nm">Graph API Mail.Send · SMTP fallback</div><div class="status-row"><span class="dot dwrn">!</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 6 -->
+<div class="section-hdr">6 · Manager Path</div>
+<div class="group">
+  <div class="group-title">6a · Intelligence Dashboard</div>
+  <div style="margin-bottom:12px;">
+    <div class="n n-open" style="width:400px;display:inline-block;" data-tip="<strong>Open Decision</strong>Can Manager also submit updates? YES → simplified input form. NO → read-only. Decide before building manager page.">
+      <div class="nt">Open: Can managers submit updates? <span style="color:#EF5350;">?</span></div><div class="ns">YES → simplified input form · NO → read-only</div>
+    </div>
+  </div>
+  <div class="row" style="align-items:flex-start;gap:16px;flex-wrap:wrap;">
+    <div class="n n-flow" style="width:200px;" data-tip="<strong>Intelligence Dashboard</strong>Manager landing. All partners overview. Time-period filter.<br><code>GET /manager · gpt-4o summaries</code>">
+      <div class="nt">Intelligence Dashboard</div><div class="ns">All partners · time-period filter</div><div class="nm">GET /manager · gpt-4o summaries</div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="n n-flow" style="width:210px;" data-tip="<strong>Overview + Partner Selection</strong>Partner card grid. Click to drill in.<br><code>SELECT approved WHERE partner=? AND cycle=?</code>">
+      <div class="nt">Overview + Partner Selection</div><div class="ns">Partner card grid · click to drill in</div><div class="nm">SELECT approved WHERE cycle=?</div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div class="n n-flow" style="width:220px;" data-tip="<strong>View Approved Updates</strong>All approved updates for selected partner + time period. Grouped by workstream.">
+      <div class="nt">View Approved Updates</div><div class="ns">Selected partner + time period</div><div class="ns">Grouped by workstream</div><div class="nm">SELECT approved · partner · cycle</div>
+    </div>
+  </div>
+</div>
+
+<div class="group">
+  <div class="group-title">6b · Interactive Dashboard — Agent 8 (Master Agent)</div>
+  <div class="row" style="align-items:flex-start;gap:16px;flex-wrap:wrap;">
+    <div class="n n-agent" style="width:320px;" data-tip="<strong>Agent 8 — Master Orchestrator</strong>Orchestrates all agents 1–7. Access to all partner data, workstreams, cycles, approved updates.<br>Capabilities: drill into updates · compare over time · narrative summaries · cross-partner queries.<br><code>gpt-4o · tool-use · function calling</code><code>text-embedding-ada-002 · pgvector</code><span class='tok'>✓ gpt-4o + embeddings confirmed</span><span class='twrn'>⚠ pgvector: needs PostgreSQL IT approval</span>">
+      <div class="nt">🤖 Agent 8 — Master Orchestrator</div><div class="ns">Orchestrates all agents · all partner data</div><div class="ns">Drill-in · compare · narrative summaries</div><div class="nm">gpt-4o · tool-use · function calling</div><div class="nm">text-embedding-ada-002 · pgvector</div><div class="status-row"><span class="dot dok">✓</span><span class="dot dwrn">!</span></div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div class="n n-out" style="width:240px;" data-tip="<strong>Drill-in View</strong>Deep dive into a specific update: full content, source, edit history, approval timestamp.<br><code>GET /manager/update/{id}</code>">
+        <div class="nt">Drill into update</div><div class="ns">Full content · source · edit history</div><div class="nm">GET /manager/update/{id}</div>
+      </div>
+      <div class="n n-out" style="width:240px;" data-tip="<strong>Compare Over Time</strong>Cross-cycle trend analysis. New themes vs dropped topics. Powered by pgvector semantic search.">
+        <div class="nt">Compare updates over time</div><div class="ns">Cross-cycle trends · new vs dropped themes</div><div class="nm">pgvector semantic search</div>
+      </div>
+      <div class="n n-out" style="width:240px;" data-tip="<strong>Narrative Summary</strong>gpt-4o generates natural language summary of all updates for selected partner + period.">
+        <div class="nt">Narrative summary</div><div class="ns">Key themes · risks · opportunities</div><div class="nm">gpt-4o · approved updates in context</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 7 -->
+<div class="section-hdr">7 · Admin Path</div>
+<div class="group">
+  <div class="row" style="align-items:flex-start;gap:16px;flex-wrap:wrap;">
+    <div class="n n-auth" style="width:200px;" data-tip="<strong>Access Control Panel</strong>Admin-only view. Full system configuration.<br><code>role = admin · GET /admin</code>">
+      <div class="nt">Access Control Panel</div><div class="ns">Admin-only · full system access</div><div class="nm">role = admin · GET /admin</div><div class="status-row"><span class="dot dok">✓</span></div>
+    </div>
+    <div class="arrow-right">→</div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div class="n n-flow" style="width:270px;" data-tip="<strong>Add Partners + Assign Slots</strong><code>POST /admin/partners · UPDATE users SET partner_slot</code>">
+        <div class="nt">Add partners + assign slots</div><div class="ns">Create partner · link to contributor</div><div class="nm">POST /admin/partners</div>
+      </div>
+      <div class="n n-flow" style="width:270px;" data-tip="<strong>Add / Edit Workstreams</strong>Name · sub-categories · brief (primes Agent 1).<br><code>POST /admin/workstreams</code><span class='tok'>✓ Built — 3-question guided flow</span>">
+        <div class="nt">Add / edit workstreams</div><div class="ns">Name · sub-categories · brief (primes Agent 1)</div><div class="nm">POST /admin/workstreams</div><div class="status-row"><span class="dot dok">✓</span></div>
+      </div>
+      <div class="n n-flow" style="width:270px;" data-tip="<strong>Edit Contributor Permissions</strong>Control which partners visible · which hub tabs visible per slot.<br><code>PUT /admin/permissions</code>">
+        <div class="nt">Edit contributor permissions</div><div class="ns">Which partners · which tabs visible per slot</div><div class="nm">PUT /admin/permissions</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SECTION 8 -->
+<div class="section-hdr">8 · Data Layer</div>
+<div class="group">
+  <div class="tech-grid">
+    <div class="tech-card"><h4 style="color:#4A148C;">Dev: SQLite + aiosqlite</h4>Tables: users · partners · workstreams · staged_updates · approved_updates · agent_signals · agent_prompts · cycles</div>
+    <div class="tech-card"><h4 style="color:#4A148C;">Prod: PostgreSQL + pgvector</h4>Same schema + vector column on staged_updates for semantic dedup and Agent 8 search. Needs IT cloud DB approval.</div>
+    <div class="tech-card"><h4 style="color:#4A148C;">Embeddings: text-embedding-ada-002</h4>Generated at insert time. Used for dedup (~85% cosine similarity) and Agent 8 semantic search across all partner data.</div>
+  </div>
+</div>
+
+<!-- SECTION 9 -->
+<div class="section-hdr">9 · Infrastructure &amp; Scalability</div>
+<div class="group">
+  <div class="tech-grid">
+    <div class="tech-card"><h4 style="color:#1B5E20;">Phase 1 — Now (dev)</h4>Docker Compose · FastAPI · SQLite · Session auth · Manual input only · Agents 1, 5, 6, 7 functional</div>
+    <div class="tech-card"><h4 style="color:#E65100;">Phase 2 — IT conversations</h4>Azure AD SSO app reg · PostgreSQL on ARM cloud · Azure Container Apps or AKS · Graph API Mail.Send</div>
+    <div class="tech-card"><h4 style="color:#880E4F;">Phase 3 — OAuth procurement</h4>Slack workspace admin app · Google Workspace Drive API · SharePoint Graph API — all need separate admin approvals, start early</div>
+    <div class="tech-card"><h4 style="color:#1A237E;">10–50 partners</h4>PostgreSQL + pgvector · Redis task queue · Azure Container Apps · APScheduler learning loop</div>
+    <div class="tech-card"><h4 style="color:#1A237E;">50+ partners</h4>AKS + horizontal pod autoscaling · Celery workers per channel agent · Azure Service Bus · OpenTelemetry</div>
+    <div class="tech-card"><h4 style="color:#006064;">Observability</h4>Structured logging (Python → JSON) · Azure Monitor or OpenTelemetry · per-agent latency + error tracking</div>
+  </div>
+</div>
+
+<!-- SECTION 10 -->
+<div class="section-hdr">10 · Open Design Decisions</div>
+<div class="oq-grid">
+  <div class="oq-card"><h4>1. Can managers submit updates?</h4>YES → simplified input form on manager view. NO → read-only. Decide before building manager page.</div>
+  <div class="oq-card"><h4>2. Word doc — inline edit or download only?</h4>Inline = embedded editor (complex, V2). Download = simpler. Recommendation: download first.</div>
+  <div class="oq-card"><h4>3. "If all approved" gate</h4>Cycle-level = all partners must be approved first. Per-partner = each generates independently. Per-partner more practical.</div>
+  <div class="oq-card"><h4>4. Duplicate detected — skip or surface?</h4>Recommendation: surface with merge option. Skip silently risks losing signal.</div>
+  <div class="oq-card"><h4>5. Re-classify after edit?</h4>Recommendation: optional "Re-classify" button. Trust human edit by default.</div>
+  <div class="oq-card"><h4>6. Confidence threshold values</h4>Recommended: &gt;0.80 auto-stage · 0.60–0.80 ask user · &lt;0.60 reject + manual. Tune after real data.</div>
+</div>
+
+</div>
+<div class="tip" id="tooltip"></div>
+<script>
+const tip = document.getElementById('tooltip');
+document.querySelectorAll('[data-tip]').forEach(el => {
+  el.addEventListener('mouseenter', () => { tip.innerHTML = el.getAttribute('data-tip'); tip.classList.add('show'); });
+  el.addEventListener('mousemove', e => {
+    tip.style.left = Math.min(e.clientX+14, window.innerWidth-320)+'px';
+    tip.style.top  = Math.min(e.clientY+14, window.innerHeight-220)+'px';
+  });
+  el.addEventListener('mouseleave', () => tip.classList.remove('show'));
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+"""Shared upload domain."""
