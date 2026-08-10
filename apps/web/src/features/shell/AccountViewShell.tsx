@@ -208,7 +208,11 @@ export function AccountViewShell() {
 
   const activeView = authContext.active_view;
   const activeSections = sectionLabels[activeView];
-  const selectedSection = activeSections.includes(activeSection) ? activeSection : activeSections[0];
+  const selectedSection = activeSections.includes(activeSection)
+    ? activeSection
+    : activeView === "presenter"
+      ? "Partner Intelligence"
+      : activeSections[0];
   const selectedSectionLabel =
     activeView === "admin"
       ? adminSectionDisplayLabels[selectedSection] ?? selectedSection

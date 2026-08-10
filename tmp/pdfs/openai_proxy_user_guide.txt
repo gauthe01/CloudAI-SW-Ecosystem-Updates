@@ -1,0 +1,352 @@
+
+
+===== PAGE 1 =====
+8/9/26, 9:16 PM OpenAI Proxy User Guide - Engineering IT - ARM Confluence
+Pages / … / OpenAI Proxy
+OpenAI Proxy User Guide
+Created by Richard Christie, last updated by Hariprasad Pendota on 10 Jan 2026 • 5 minute read
+ Brief
+Overview
+Getting Started
+Handling the API Key
+OpenAPI Endpoint
+Example for the python OpenAI SDK
+Proxy API Keys
+Known Bugs and Limitations
+Brief
+This page describes how to use the OpenAI Proxy https://openai-api-proxy.geo.arm.com/ and get started using API
+keys. This service is in active development and there may be many areas that are subject to change as we attempt to
+add new features or improve usability.
+Overview
+The purpose of the proxy is two-fold - briefly (and not exhaustively)
+FinOps perspective
+being able to behind-the-scenes cache model request output and replay
+work out where requests are coming from and how much they are costing
+Security perspective
+stopping Arm OpenAI keys from being directly known to Arm employees
+they will work from anywhere and have no max time to live, creating a problem of accidental leakage
+- there are already many attacks of "LLM jacking" on the web where third parties abuse leaked API
+keys to use LLMs for free and even charge their "customers" for the privilege!
+stopping accidental leakage of 3E002 and other export controlled data through CustomGPT / Actions etc
+by geo-segregating key usage within Arm
+Getting Started
+From the environment you want to create a key for:
+1. Go to https://openai-api-proxy.geo.arm.com/ (e.g. from your laptop, or from ETX'd Firefox in an SCE
+environment)
+2. Click "Create New API Key"
+3. Copy the API key and the proxy-endpoint URL to your SDK and connect
+If you get an error when attempting to create an API key, this will be because the proxy does not yet know where your
+internal Arm IP is. We are working with IT to automate this, but at the moment you need to ask in #help-openai-api.
+ The proxy now supports keys for multiple environments and you can have one key per environment.
+Attempting to create an additional key in the same environment will overwrite/replace the your previous key for
+that environment.
+https://confluence.arm.com/spaces/ITINFRA/pages/2156018276/OpenAI+Proxy+User+Guide 1/10
+
+
+===== PAGE 2 =====
+8/9/26, 9:16 PM OpenAI Proxy User Guide - Engineering IT - ARM Confluence
+Creating/updating a key in a new environment will not redact/overwrite your keys for any other environments.
+Handling the API Key
+Your API-keys are personal to you and thus considered secret.
+1. They should not be shared with anyone else, nor put into pipelines and any file you might put it in should only be
+readable to you. (0600 permissions in posix environments).
+2. They should not be put in the clear on a command line on a shared host where people can see them via e.g. ps
+Because it is quite normal for people to give others copies of their shell init files to copy relevant bits out of, we suggest
+not putting them in your shell RC files to avoid accidents. Instead, you can set them in the environment by putting the
+env declarations in another file (e.g. ~/.secret-env ) and then source-ing that from your init file.
+More secure still is to put them in a gpg vault, then create a shell function or script which asks for a given key and then
+will take you through the decryption process before returning it to where it can be used in a local variable. However,
+many UI tools may not be able to take advantage of this, so secret env is probably the best compromise.
+See also Security Principles for Custom GPT Actions and API Integration (under Outbound API Key usage)
+OpenAPI Endpoint
+Current
+https://openai-api-proxy.geo.arm.com/api/providers/openai/v1 ('smart' - will use the right region for your location)
+The two legacy region-locked endpoints are
+https://openai-api-proxy.geo.arm.com/api/providers/openai-eu/v1 (Non-US)
+https://openai-api-proxy.geo.arm.com/api/providers/openai-us/v1 (US)
+ The proxy uses Arm's root of trust for its HTTPS certificate. Whilst most machines should already trust this
+through (e.g.) curl, some parts of python still don't. There's information on Vault PKI Trust Root detailing how
+to fix this. For python code - many python http libraries use certifi , which has its own trust-store. We have a
+script here which can be run in your venv to fix this.
+Example for the python OpenAI SDK
+This uses the official OpenAI python SDK which can be found here https://github.com/openai/openai-python - click for
+extended documentation - and is mirrored in Artifactory (please pip install from there - see Using PyPI Mirrors if
+you're not sure how!)
+The following gives you a simple "hello world" using both the legacy completions and newer responses APIs to OpenAI
+in python.
+The below code assumes you have already set up a proxy API key for yourself and have it in a local environment
+variable OPENAI_API_KEY.
+1. Get a good version of python on your path, e.g. via brew install on a Mac, or module load on a cluster
+environment.
+Suggest python 3.13 but any version 3.11 or higher that does TLS should work.
+Keep in mind the minimum version required by the OpenAI module may change over time.
+2. Create a python virtual environment (venv)
+python3 -m venv --upgrade-deps my-openai-project
+3. Install the openai python module
+./my-openai-project/bin/pip install openai
+https://confluence.arm.com/spaces/ITINFRA/pages/2156018276/OpenAI+Proxy+User+Guide 2/10
+
+
+===== PAGE 3 =====
+8/9/26, 9:16 PM OpenAI Proxy User Guide - Engineering IT - ARM Confluence
+4. Install the Arm root certificate (the below code works outside of 3e002, see the python certificate issues box
+below for 3e002 version)
+(sh -c '. ./my-openai-project/bin/activate && curl -sSfL
+https://artifactory.arm.com/artifactory/vault.pki/ent-
+pki/helpers/python/certifi-install-root.sh | sh')
+5. Copy the following "Example python" code to a local file e.g. openai-test.py and then run it with
+./my-openai-project/bin/python3 openai-test.py
+Example Python Expand source
+ Python Certificate issues
+Currently the openai module relies on httpx which doesn't seem to use the system trust store yet by default.
+Hence for now you will need to install Arm's root of trust.
+There's a simple helper script that can be installed on non-windows machines (or windows under its bash
+emulation) by running this inside an activated python virtual environment:
+Open environments 3E002 Environments
+curl -sSfL https://artifactory.arm.com/artifactory/vault.pki/ent-pki/helpers/python/certifi-
+The script can also be cloned from (you must be signed in)
+https://eu03.gerrit.geo.arm.com/plugins/gitiles/scratch/rchristi/openai-utils.
+Then simply run it (no arguments necessary) inside an activated python venv to install Arm's root there,
+providing you can see artifactory.arm.com.
+Proxy API Keys
+The proxy API key you get will only work from a given location. This is intended to be segregated in Arm at the bare
+minimum as follows - and are mostly about government data residency compliance:
+US vs non-US
+3E002 compliant network zones vs not
+Your API key will only work when used from the same internal "zone" as it was created.
+This is further segregate based on cloud tenancy/project and within clusters, e.g. nahpc vs NASCE vs research islands
+vs cloud account; similar to euhpc (sce03, research islands). Lab7 board farms etc.
+You can create multiple keys if you do work in different zones (one key per zone).
+https://confluence.arm.com/spaces/ITINFRA/pages/2156018276/OpenAI+Proxy+User+Guide 3/10
+
+
+===== PAGE 4 =====
+8/9/26, 9:16 PM OpenAI Proxy User Guide - Engineering IT - ARM Confluence
+Known Bugs and Limitations
+We do not yet support service accounts
+data_trusted
+23 Comments
+Davide Guidi
+23 Apr 2025
+I get "Request is not authorised" error when trying to download the script at:
+https://eu03.gerrit.geo.arm.com/plugins/gitiles/scratch/rchristi/openai-utils just needed to sign in
+Anton Bondarenko
+23 Apr 2025
+You need to sign in
+https://confluence.arm.com/spaces/ITINFRA/pages/2156018276/OpenAI+Proxy+User+Guide 4/10
+
+
+===== PAGE 5 =====
+8/9/26, 9:16 PM OpenAI Proxy User Guide - Engineering IT - ARM Confluence
+Joakim Simonsson
+12 Oct 2025
+Instead of running the shell script mentioned above, you can perform all steps directly in Python.
+This assumes that your proxy API key is stored in the file: $HOME/.config/arm_openai_proxy/key
+from openai import OpenAI
+import httpx
+import ssl
+from pathlib import Path
+API_KEY_FILE = Path.home() / ".config/arm_openai_proxy/key"
+CA_URL = "https://artifactory.arm.com/artifactory/vault.pki/ent-pki/pem/certs/ARM Enterprise
+CA_PATH = Path.home() / ".config/arm_openai_proxy/ARM-Enterprise-PKI-Root-CA.pem"
+BASE_URL = "https://openai-api-proxy.geo.arm.com/api/providers/openai/v1"
+# Download CA once
+if not CA_PATH.exists():
+CA_PATH.parent.mkdir(parents=True, exist_ok=True)
+r = httpx.get(CA_URL, timeout=30.0)
+r.raise_for_status()
+CA_PATH.write_bytes(r.content)
+ctx = ssl.create_default_context()
+ctx.load_verify_locations(cafile=str(CA_PATH))
+httpx_client = httpx.Client(verify=ctx)
+client = OpenAI(
+api_key=API_KEY_FILE.read_text().strip(),
+base_url=BASE_URL,
+http_client=httpx_client,
+)
+https://confluence.arm.com/spaces/ITINFRA/pages/2156018276/OpenAI+Proxy+User+Guide 5/10
+
+
+===== PAGE 6 =====
+8/9/26, 9:16 PM OpenAI Proxy User Guide - Engineering IT - ARM Confluence
+Richard Christie
+29 Apr 2025
+With my PKI hat on: Please don't "redistribute" the root cert - much as I appreciate the trouble of
+posting the above and even putting it in an expand macro! We need to make sure people are getting it
+from a known location (Artifactory, or the original IT area, not 'some post on a confluence page'). This
+enables us to rotate / keep it up to date sensibly. It also helps foster the right security culture - we
+shouldn't be encouraging people to just trust some other location offering the cert.
+From a methodology perspective, the above is fine for your own personal scripts, but portable
+production code should not assume locations of certs on machines in this way. Instead, either call the
+relevant openssl libraries in python to find the correct system root certificate store and pull the
+certificate directly from that by its fully qualified subject name, or just curl the thing from the two official
+distribution points.
+Ideally though this should be set up as part of the environment the script runs in so everybody's code
+doesn't have to rely on it.
+Joakim Simonsson
+29 Apr 2025
+Thanks for the feedback. I will edit my above comment and remove the copy of the cert.
+Joakim Simonsson
+29 Apr 2025
+Ideally though this should be set up as part of the environment
+Having an internal pip or conda package that provides the root cert would be nice.
+E.g. pip install arm_internal_root_cert
+Other internal packages could then specify the arm_internal_root_cert package as a
+dependency, and things would be transparent for the user.
+Richard Christie
+29 Apr 2025
+agreed. Although this is hard to do generically as the method for doing this depends
+on which http library the python code is using. e.g.requests vs httpx vs a-another.
+For OpenAI's SDK we could certainly providing wrapping code to manage this
+internally. (Maybe you'd like to write a pip module to do so? ) Though I think at
+some point httpx will actually use the system certs directly, obviating the need for it.
+Reimar Doeffinger
+17 Nov 2025
+The correct way to do this is to
+import truststore
+truststore.inject_into_ssl()
+Do not set up verification paths manually, you WILL break things (e.g. after doing the above you will be
+unable to connect to artifactory)
+https://confluence.arm.com/spaces/ITINFRA/pages/2156018276/OpenAI+Proxy+User+Guide 6/10
+
+
+===== PAGE 7 =====
+8/9/26, 9:16 PM OpenAI Proxy User Guide - Engineering IT - ARM Confluence
+Joakim Simonsson
+17 Nov 2025
+No, this will not affect Artifactory or anything else in the system.
+The code above downloads the self-signed cert and uses that for that specific OpenAI request
+only.
+Reimar Doeffinger
+17 Nov 2025
+Right, I misread it, I thought it modified the default SSL context, not just a specific
+instance.
+Peter Rowe
+29 Apr 2025
+certifi-install-root.sh is a unix shell script. I'm running python on Windows. Please can someone explain the
+steps to load the root certificate on Windows.
+Joakim Simonsson
+30 Apr 2025
+See my comment above. I think that should work on Windows as well.
+Richard Christie
+30 Apr 2025
+I can also make a compiled golang binary of the code which can be run on windows, but the
+script assumes you are running inside an activated VENV
+1. Asks (via python) where certifi's trust is installed; you can do that with the following in DOS
+a. echo "import certifi; print(certifi.where())" | python
+2. Open the path given from above in your favourite text editor; if you got an error (no certifi)
+then pip install certifi and repeat
+3. Download the cert from https://artifactory.arm.com/artifactory/vault.pki/ent-
+pki/pem/certs/ARM%20Enterprise%20PKI%20Root%20CA.pem
+4. Append that to the file you opened in (2)
+5. Save file and you're done
+Peter Rowe
+30 Apr 2025
+Thanks Richard, that worked easily (with help from Tim Paxton's deskside support). In
+case anyone else wants to follow these steps, this is how it worked out for me:
+1. In my venv launched the python interpreter (typed 'python' at the command line)
+2. In python typed 'import certifi; print(certifi.where())' to find where the certificates are
+located
+a. It returned '<myPath>\venv\Lib\site-packages\certifi\cacert.pem'
+3. Downloaded the certificate from artifactory (just put
+'https://artifactory.arm.com/artifactory/vault.pki/ent-
+pki/pem/certs/ARM%20Enterprise%20PKI%20Root%20CA.pem' in your browser)
+4. Opened both the certificate and cacert.pem in a text editor and pasted the
+certificate on the end of all the other certificates
+... and the API now works !
+https://confluence.arm.com/spaces/ITINFRA/pages/2156018276/OpenAI+Proxy+User+Guide 7/10
+
+
+===== PAGE 8 =====
+8/9/26, 9:16 PM OpenAI Proxy User Guide - Engineering IT - ARM Confluence
+Unknown User (adisar02)
+06 May 2025
+Can you please update the document with working example?
+Richard Christie
+06 May 2025
+There's an example code in the simple python test program on this page already under "Example for
+the python OpenAI SDK". You need to update based on geo jurisdiction - are you in the US or not, but
+otherwise it works. See also discussion on installing Arm's root cert in the certifi store.
+Is that what you had in mind? If not, is there a specific example you are after?
+Unknown User (adisar02)
+06 May 2025
+i meant lets add a clear example like:
+(note this only for EU)
+def get_api_key():
+api_key = os.getenv("CHATGPT_API_KEY")
+if not api_key:
+console.print("[bold red]Error:[/bold red] CHATGPT_API_KEY environment var
+sys.exit(1)
+return api_key
+def create_openai_client(api_key: str):
+ca = '/etc/pki/ca-trust/source/anchors/ARM-Enterprise-PKI-Root-CA.crt'
+ctx = ssl.SSLContext()
+ctx.load_verify_locations(cafile=ca)
+httpx_client = httpx.Client(verify=ctx)
+client = OpenAI(
+api_key=api_key,
+base_url='https://openai-api-proxy.geo.arm.com/api/providers/openai-eu/v1'
+http_client=httpx_client
+)
+return client
+https://confluence.arm.com/spaces/ITINFRA/pages/2156018276/OpenAI+Proxy+User+Guide 8/10
+
+
+===== PAGE 9 =====
+8/9/26, 9:16 PM OpenAI Proxy User Guide - Engineering IT - ARM Confluence
+Richard Christie
+06 May 2025
+Yup, so there's a more portable example (without the red text about api keys) of that
+where I linked above. However, the much shorter page example is something that will
+work on any OS, by following the caveat and info to curl the Arm root of trust certificate
+into the python environment in an OS agnostic way. Your example above relies on the
+location of a trust anchor as defined specifically for redhat linux as installed by EIT. (i.e. it
+won't work on any other linux, on people's own redhat containers/VMs, or people's macOS
+laptops).
+I do think we probably need to have a bit more information available on basic packaging
+for python environments; e.g. how to build reusable pip-installable code rather than
+random little scripts. Perhaps we could make an Arm certifi wrapper that will do the
+installation as needed.
+Andrew Choi
+19 Aug 2025
+When testing the “working Python example” from the website, I hit this error:
+print(completion_response.output_text)
+^^^^^^^^^^^^^^^^^^^
+NameError: name 'completion_response' is not defined
+It looks like the example refers to completion_response, but the actual variable returned is completion.
+Updating the print statement fixes it.
+Replace:
+print(completion_response.output_text)
+With:
+print(completion.choices[0].message.content)
+After this change, the example runs as expected.
+Richard Christie
+19 Aug 2025
+Fixed, also changed the URL to not include geography. Though do feel free to just correct it yourself;
+conference is a collaborative document!
+Kirill Bykov
+12 Sep 2025
+Hi Richard, maybe we can add this command you gave me into the guide, to help people find their IP
+address?
+ifconfig -a | awk '/inet / && $2 ~ /^10\./ {print $2; exit}'
+https://confluence.arm.com/spaces/ITINFRA/pages/2156018276/OpenAI+Proxy+User+Guide 9/10
+
+
+===== PAGE 10 =====
+8/9/26, 9:16 PM OpenAI Proxy User Guide - Engineering IT - ARM Confluence
+Richard Christie
+14 Sep 2025
+that's not necessarily generic; especially if you are behind NAT; it gives you a local IP of the host you
+are on, but if you are behind NAT it will fail.
+We now have a curl call that can be made to get your IP as the proxy sees it, as well as which
+office it thinks you are in.
+so e.g.
+curl https://openai-api-proxy.geo.arm.com/project/lookup
+Which will return JSON:
+{"projectName":"Non-US Offices","ipAddress":"10.57.3.196","is3E002":false}
+Kirill Bykov
+15 Sep 2025
+That is so good, thanks!
+Unless otherwise stated, all material is Copyright © ARM Ltd
+and Confidential
+https://confluence.arm.com/spaces/ITINFRA/pages/2156018276/OpenAI+Proxy+User+Guide 10/10

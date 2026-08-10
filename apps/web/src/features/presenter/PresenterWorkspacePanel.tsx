@@ -852,8 +852,8 @@ function groupUpdatesByPartner(updates: PresenterUpdate[], partners: PresenterPa
 
 function splitMetadataValue(value: string | null | undefined): string[] {
   return (value ?? "")
-    .split(/\n|•|-/)
-    .map((item) => item.trim())
+    .split(/\n|•/)
+    .map((item) => item.replace(/^\s*[-*]\s+/, "").trim())
     .filter(Boolean);
 }
 
