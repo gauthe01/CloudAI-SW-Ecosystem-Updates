@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.connected_source import ConnectedSource, ConnectedSourceStatus
 from app.db.models.identity import RoleType, User, UserRoleAssignment, UserSession
 from app.db.models.partner import Partner, PartnerContributorAssignment, PartnerStatus
+from app.db.models.partner_update import PartnerUpdate, PartnerUpdateStatus
 from app.db.models.source_event import (
     AgentRun,
     AgentRunStatus,
@@ -145,9 +146,96 @@ async def test_worker_default_processing_succeeds_and_logs_agent_run() -> None:
         assert len(agent_runs) == 1
         assert agent_runs[0].status == AgentRunStatus.succeeded.value
         assert agent_runs[0].rulebook_name == "source_event.github"
-        assert agent_runs[0].rulebook_version.startswith("placeholder-2026-08-09:")
+        assert agent_runs[0].rulebook_version.startswith("production-2026-08-11:")
         assert agent_runs[0].output_json["pending_updates_created"] == 0
         assert agent_runs[0].output_json["extraction_mode"] == "infrastructure_only"
+
+        await cleanup_test_records(session, [partner_name], [contributor_email])
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_worker_persists_model_write_pending_update() -> None:
+    contributor_email = f"queue-model-write-contributor-{uuid.uuid4()}@example.com"
+    partner_name = f"Queue Model Write Partner {uuid.uuid4()}"
+
+    async with get_session_factory()() as session:
+        await cleanup_test_records(session, [partner_name], [contributor_email])
+        source = await create_active_source(
+            session,
+            partner_name=partner_name,
+            contributor_email=contributor_email,
+            payload=ConnectedSourceRequest(
+                source_type="jira_issue",
+                source_url="https://jira.example.com/browse/AWS-2400",
+            ),
+        )
+        service = SourceEventQueueService(session)
+        queued = await service.enqueue_event(
+            SourceEventIngestRequest(
+                connected_source_id=source.connected_source_id,
+                external_event_id="jira-event-2400",
+                source_event_timestamp=datetime(2026, 8, 7, 10, 30, tzinfo=UTC),
+            )
+        )
+
+        async def model_write_handler(source_event, _payload):
+            return {
+                "pending_updates_created": 0,
+                "source_event_id": str(source_event.source_event_id),
+                "extraction_mode": "model_write",
+                "rulebook_name": "source_event.jira",
+                "rulebook_version": "production-test:abcdef123456",
+                "rulebook_status": "production",
+                "input_fingerprint": "fingerprint",
+                "model_name": "fake-update-extraction-model",
+                "reason": "Model output validated as create_update.",
+                "model_output_validated": True,
+                "model_decision": "create_update",
+                "pending_update_command": {
+                    "partner_id": str(source_event.partner_id),
+                    "cycle_month": "2026-08-01",
+                    "title": "AWS validation moved to review",
+                    "summary": "AWS validation moved to review.\n2 partner tasks remain.",
+                    "source_type": "jira",
+                    "source_label": "AWS-2400",
+                    "source_url": "https://jira.example.com/browse/AWS-2400",
+                    "source_event_key": source_event.idempotency_key,
+                    "connected_source_id": str(source_event.connected_source_id),
+                    "source_event_id": str(source_event.source_event_id),
+                    "reasoning_category": "progress",
+                    "confidence": 0.91,
+                    "needs_human_attention": False,
+                    "event_importance": "medium",
+                    "dedupe_key_hint": "AWS-2400:review",
+                },
+            }
+
+        processed = await service.process_event(
+            queued.source_event.source_event_id,
+            handler=model_write_handler,
+        )
+
+        assert processed.status == SourceEventStatus.succeeded
+
+        updates = list((await session.execute(select(PartnerUpdate))).scalars().all())
+        assert len(updates) == 1
+        assert updates[0].partner_id == source.partner_id
+        assert updates[0].cycle_month.isoformat() == "2026-08-01"
+        assert updates[0].title == "AWS validation moved to review"
+        assert updates[0].summary == "AWS validation moved to review.\n2 partner tasks remain."
+        assert updates[0].source_type == "jira"
+        assert updates[0].source_label == "AWS-2400"
+        assert updates[0].source_url == "https://jira.example.com/browse/AWS-2400"
+        assert updates[0].source_event_key == queued.source_event.idempotency_key
+        assert updates[0].connected_source_id == source.connected_source_id
+        assert updates[0].source_event_id == queued.source_event.source_event_id
+        assert updates[0].status == PartnerUpdateStatus.pending.value
+
+        result = await session.execute(select(AgentRun))
+        agent_run = result.scalar_one()
+        assert agent_run.output_json["pending_updates_created"] == 1
+        assert agent_run.output_json["created_update_id"] == str(updates[0].update_id)
 
         await cleanup_test_records(session, [partner_name], [contributor_email])
         await session.commit()
@@ -297,6 +385,7 @@ async def cleanup_test_records(
 ) -> None:
     partner_ids = select_partner_ids(partner_names)
     await session.execute(delete(AgentRun))
+    await session.execute(delete(PartnerUpdate).where(PartnerUpdate.partner_id.in_(partner_ids)))
     await session.execute(delete(SourcePayload))
     await session.execute(
         delete(SourceEvent).where(SourceEvent.partner_id.in_(partner_ids))

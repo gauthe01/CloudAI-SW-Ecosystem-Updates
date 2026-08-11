@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -107,7 +108,10 @@ async def test_contributor_metadata_save_load_and_overwrite_latest_snapshot() ->
             cycle="2026-08",
             payload=PartnerMetadataSaveRequest(
                 status="amber",
+                why_this_partner="Strategic cloud ecosystem priority remains valid.",
+                business_priority="Medium",
                 highlights_status="Needs attention.",
+                goals="Close monthly partner risks.",
                 risks=[
                     PartnerMetadataRiskPayload(
                         description="New monthly risk",
@@ -126,11 +130,20 @@ async def test_contributor_metadata_save_load_and_overwrite_latest_snapshot() ->
 
         assert overwritten_metadata.metadata_id == saved_metadata.metadata_id
         assert overwritten_metadata.status == "amber"
-        assert overwritten_metadata.why_this_partner is None
+        assert overwritten_metadata.why_this_partner == "Strategic cloud ecosystem priority remains valid."
         assert [risk.description for risk in overwritten_metadata.risks] == ["New monthly risk"]
         assert [resource.title for resource in overwritten_metadata.resources] == [
             "AWS SharePoint"
         ]
+
+        with pytest.raises(ValidationError):
+            PartnerMetadataSaveRequest(
+                status="green",
+                why_this_partner=" ",
+                business_priority="High",
+                highlights_status="Healthy engagement.",
+                goals="Land monthly partner updates.",
+            )
 
         snapshot_count = await count_rows(
             session,

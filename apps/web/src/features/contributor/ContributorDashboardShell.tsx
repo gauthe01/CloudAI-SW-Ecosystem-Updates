@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { GlobalLoader } from "@/components/foundation/GlobalLoader";
 import {
   ContributorDashboardContext,
   ContributorPartner,
@@ -47,7 +48,7 @@ export function ContributorDashboardShell({
   const [activeTab, setActiveTab] = useState<ContributorDashboardTab>("partner_metadata");
   const [search, setSearch] = useState("");
   const [cycle, setCycle] = useState("");
-  const [manualFormOpen, setManualFormOpen] = useState(false);
+  const [addUpdateOpen, setAddUpdateOpen] = useState(false);
   const [updatesReloadKey, setUpdatesReloadKey] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -92,11 +93,25 @@ export function ContributorDashboardShell({
   }
 
   function handleManualUpdateCreated() {
-    setManualFormOpen(false);
     setActiveTab("pending_updates");
     selectTab("pending_updates", setActiveTab);
     setUpdatesReloadKey((current) => current + 1);
     refreshDashboardContext();
+  }
+
+  if (!loading && !error && addUpdateOpen && cycle) {
+    return (
+      <div className="contributor-dashboard-shell add-update-mode">
+        <ManualUpdateForm
+          partnerId={activePartner.partner_id}
+          partnerName={activePartner.name}
+          cycle={cycle}
+          cycleLabel={activeCycleLabel}
+          onCancel={() => setAddUpdateOpen(false)}
+          onCreated={handleManualUpdateCreated}
+        />
+      </div>
+    );
   }
 
   return (
@@ -129,7 +144,7 @@ export function ContributorDashboardShell({
           <button
             className="contributor-add-update-action"
             type="button"
-            onClick={() => setManualFormOpen((current) => !current)}
+            onClick={() => setAddUpdateOpen(true)}
             disabled={!cycle}
           >
             + Add update
@@ -137,18 +152,13 @@ export function ContributorDashboardShell({
         </div>
       </div>
 
-      {manualFormOpen && cycle ? (
-        <ManualUpdateForm
-          partnerId={activePartner.partner_id}
-          cycle={cycle}
-          cycleLabel={activeCycleLabel}
-          onCancel={() => setManualFormOpen(false)}
-          onCreated={handleManualUpdateCreated}
+      {error ? <p className="workspace-error inline-error">{error}</p> : null}
+      {loading ? (
+        <GlobalLoader
+          label="Loading contributor dashboard"
+          detail="Collecting partner updates, metadata, and source status."
         />
       ) : null}
-
-      {error ? <p className="workspace-error inline-error">{error}</p> : null}
-      {loading ? <p className="muted-copy">Loading contributor dashboard</p> : null}
 
       {!loading && !error ? (
         <>

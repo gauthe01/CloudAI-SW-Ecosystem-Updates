@@ -61,7 +61,7 @@ async def test_source_event_orchestrator_returns_infrastructure_only_result() ->
     assert result.pending_updates_created == 0
     assert result.extraction_mode == "infrastructure_only"
     assert result.rulebook_name == "source_event.jira"
-    assert result.rulebook_status == "placeholder"
+    assert result.rulebook_status == "production"
     assert result.model_name is None
     assert "Feature 23B/23C" in result.reason
 

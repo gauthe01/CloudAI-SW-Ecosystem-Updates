@@ -85,8 +85,57 @@ export type DraftEmail = {
   update_count: number;
 };
 
-export async function listPresenterPartners(cycle: string): Promise<PresenterPartner[]> {
-  const response = await fetch(`${apiBaseUrl}/api/presenter/partners?cycle=${cycle}`, {
+export type PresenterAskAnswer = {
+  answer: string;
+  grounded: boolean;
+  model: string | null;
+};
+
+export type PresenterExecutiveSummary = {
+  cycle: string;
+  partner_id: string | null;
+  partner_ids: string[];
+  bullets: string[];
+  source_note: string | null;
+  update_count: number;
+  grounded: boolean;
+  model: string | null;
+};
+
+export type PresenterDecisionBoardSignal = {
+  partner_id: string | null;
+  partner_name: string | null;
+  priority: string | null;
+  title: string;
+  action: string;
+  rationale: string;
+  owner: string | null;
+  due_date: string | null;
+  severity: string | null;
+  source_label: string | null;
+  source_url: string | null;
+};
+
+export type PresenterDecisionBoard = {
+  cycle: string;
+  partner_id: string | null;
+  partner_ids: string[];
+  signals: PresenterDecisionBoardSignal[];
+  source_note: string | null;
+  update_count: number;
+  grounded: boolean;
+  model: string | null;
+};
+
+export type PresenterPeriodQuery = {
+  cycle: string;
+  dateStart?: string | null;
+  dateEnd?: string | null;
+};
+
+export async function listPresenterPartners(period: PresenterPeriodQuery): Promise<PresenterPartner[]> {
+  const params = presenterPeriodParams(period);
+  const response = await fetch(`${apiBaseUrl}/api/presenter/partners?${params.toString()}`, {
     credentials: "include",
     cache: "no-store",
   });
@@ -101,16 +150,20 @@ export async function listPresenterPartners(cycle: string): Promise<PresenterPar
 
 export async function listPresenterUpdates({
   cycle,
+  dateStart,
+  dateEnd,
   partnerId,
   partnerIds,
   search,
 }: {
   cycle: string;
+  dateStart?: string | null;
+  dateEnd?: string | null;
   partnerId?: string | null;
   partnerIds?: string[];
   search: string;
 }): Promise<PresenterUpdate[]> {
-  const params = new URLSearchParams({ cycle });
+  const params = presenterPeriodParams({ cycle, dateStart, dateEnd });
   if (partnerId) {
     params.set("partner_id", partnerId);
   }
@@ -154,14 +207,18 @@ export async function getPresenterMetadata(
 
 export async function getPresenterAnalysis({
   cycle,
+  dateStart,
+  dateEnd,
   partnerId,
   partnerIds,
 }: {
   cycle: string;
+  dateStart?: string | null;
+  dateEnd?: string | null;
   partnerId?: string | null;
   partnerIds?: string[];
 }): Promise<PresenterAnalysis> {
-  const params = new URLSearchParams({ cycle });
+  const params = presenterPeriodParams({ cycle, dateStart, dateEnd });
   if (partnerId) {
     params.set("partner_id", partnerId);
   }
@@ -181,10 +238,14 @@ export async function getPresenterAnalysis({
 
 export async function draftPresenterEmail({
   cycle,
+  dateStart,
+  dateEnd,
   partnerId,
   partnerIds,
 }: {
   cycle: string;
+  dateStart?: string | null;
+  dateEnd?: string | null;
   partnerId?: string | null;
   partnerIds?: string[];
 }): Promise<DraftEmail> {
@@ -192,7 +253,13 @@ export async function draftPresenterEmail({
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cycle, partner_id: partnerId, partner_ids: partnerIds ?? [] }),
+    body: JSON.stringify({
+      cycle,
+      date_start: dateStart || null,
+      date_end: dateEnd || null,
+      partner_id: partnerId,
+      partner_ids: partnerIds ?? [],
+    }),
   });
 
   if (!response.ok) {
@@ -200,6 +267,120 @@ export async function draftPresenterEmail({
   }
 
   return response.json();
+}
+
+export async function askPresenterAi({
+  cycle,
+  dateStart,
+  dateEnd,
+  partnerId,
+  partnerIds,
+  question,
+}: {
+  cycle: string;
+  dateStart?: string | null;
+  dateEnd?: string | null;
+  partnerId?: string | null;
+  partnerIds?: string[];
+  question: string;
+}): Promise<PresenterAskAnswer> {
+  const response = await fetch(`${apiBaseUrl}/api/presenter/ask`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      cycle,
+      date_start: dateStart || null,
+      date_end: dateEnd || null,
+      partner_id: partnerId,
+      partner_ids: partnerIds ?? [],
+      question,
+    }),
+  });
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? "Unable to ask AI assistant.");
+  }
+
+  return response.json();
+}
+
+export async function generatePresenterExecutiveSummary({
+  cycle,
+  dateStart,
+  dateEnd,
+  partnerId,
+  partnerIds,
+}: {
+  cycle: string;
+  dateStart?: string | null;
+  dateEnd?: string | null;
+  partnerId?: string | null;
+  partnerIds?: string[];
+}): Promise<PresenterExecutiveSummary> {
+  const response = await fetch(`${apiBaseUrl}/api/presenter/executive-summary`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      cycle,
+      date_start: dateStart || null,
+      date_end: dateEnd || null,
+      partner_id: partnerId,
+      partner_ids: partnerIds ?? [],
+    }),
+  });
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? "Unable to generate executive summary.");
+  }
+
+  return response.json();
+}
+
+export async function generatePresenterDecisionBoard({
+  cycle,
+  dateStart,
+  dateEnd,
+  partnerId,
+  partnerIds,
+}: {
+  cycle: string;
+  dateStart?: string | null;
+  dateEnd?: string | null;
+  partnerId?: string | null;
+  partnerIds?: string[];
+}): Promise<PresenterDecisionBoard> {
+  const response = await fetch(`${apiBaseUrl}/api/presenter/decision-board`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      cycle,
+      date_start: dateStart || null,
+      date_end: dateEnd || null,
+      partner_id: partnerId,
+      partner_ids: partnerIds ?? [],
+    }),
+  });
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? "Unable to generate decision board.");
+  }
+
+  return response.json();
+}
+
+function presenterPeriodParams({ cycle, dateStart, dateEnd }: PresenterPeriodQuery) {
+  const params = new URLSearchParams({ cycle });
+  if (dateStart && dateEnd) {
+    params.set("date_start", dateStart);
+    params.set("date_end", dateEnd);
+  }
+  return params;
 }
 
 function appendPartnerIds(params: URLSearchParams, partnerIds: string[] | undefined) {

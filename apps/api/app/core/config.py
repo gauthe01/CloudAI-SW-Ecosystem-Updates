@@ -81,6 +81,21 @@ class Settings(BaseSettings):
         default=1200,
         alias="AI_SOURCE_EVENT_MAX_OUTPUT_TOKENS",
     )
+    source_sync_enabled: bool = Field(default=True, alias="SOURCE_SYNC_ENABLED")
+    source_sync_poll_seconds: float = Field(default=30.0, alias="SOURCE_SYNC_POLL_SECONDS")
+    source_sync_interval_seconds: int = Field(
+        default=300,
+        alias="SOURCE_SYNC_INTERVAL_SECONDS",
+    )
+    source_sync_batch_size: int = Field(default=25, alias="SOURCE_SYNC_BATCH_SIZE")
+    source_sync_initial_lookback_days: int = Field(
+        default=365,
+        alias="SOURCE_SYNC_INITIAL_LOOKBACK_DAYS",
+    )
+    source_sync_http_timeout_seconds: float = Field(
+        default=30.0,
+        alias="SOURCE_SYNC_HTTP_TIMEOUT_SECONDS",
+    )
     rulebook_dir: str = Field(
         default="app/agents/rulebooks/content",
         alias="RULEBOOK_DIR",

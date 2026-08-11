@@ -98,6 +98,7 @@ def build_source_event_model_request(
                 "required_fields": ["decision", "draft_update"],
                 "draft_update_required_fields": ["title", "summary", "confidence"],
                 "draft_update_optional_fields": [
+                    "cycle_month",
                     "source_label",
                     "source_url",
                     "reasoning_category",
@@ -116,6 +117,29 @@ def build_source_event_model_request(
                 "or not business relevant."
             ),
             "Never invent facts not present in the provided input or rulebook.",
+            (
+                "When a source item has its own timestamp, set draft_update.cycle_month "
+                "to the first day of that source item's month."
+            ),
+            (
+                "Extract only net-new facts introduced or changed by the current source "
+                "event. If the event repeats earlier context plus one new fact, draft "
+                "only the new fact or facts."
+            ),
+            (
+                "Do not treat acknowledgements such as helpful, noted, thanks, or "
+                "confirmed as new facts unless they change status, timeline, commitment, "
+                "priority, risk, dependency, owner, or next action."
+            ),
+            (
+                "Do not extract facts from acknowledgement clauses such as 'the X "
+                "estimate is helpful' or 'noted on X'; those clauses are references to "
+                "earlier information, not net-new source facts."
+            ),
+            (
+                "Do not join update clauses with semicolons. If a semicolon would be "
+                "needed, split the content into separate bullet points instead."
+            ),
         ],
     }
 

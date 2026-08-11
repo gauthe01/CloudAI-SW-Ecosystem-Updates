@@ -181,6 +181,15 @@ async def test_admin_can_reject_needs_access_and_disable_sources() -> None:
         assert disabled.status == ConnectedSourceStatus.disabled
         assert disabled.review_bucket == "attention"
         assert disabled.access_test_summary == "Temporary access issue."
+        archived_resource_result = await session.execute(
+            select(PartnerResourceLink).where(
+                PartnerResourceLink.partner_id == partner.partner_id,
+                PartnerResourceLink.source_kind == ResourceLinkSourceKind.connected_source.value,
+                PartnerResourceLink.url == "https://jira.example.com/browse/AWS-1401",
+            )
+        )
+        archived_resource_link = archived_resource_result.scalar_one()
+        assert archived_resource_link.archived_at is not None
 
         await cleanup_test_records(session, [partner_name], [admin_email, contributor_email])
         await session.commit()

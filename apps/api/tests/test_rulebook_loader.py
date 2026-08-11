@@ -9,6 +9,14 @@ from app.agents.rulebooks.loader import (
     hash_rulebook_content,
 )
 
+PRODUCTION_SOURCE_EVENT_RULEBOOKS = {
+    "source_event.confluence",
+    "source_event.github",
+    "source_event.jira",
+    "source_event.sharepoint",
+    "source_event.slack",
+}
+
 
 def test_registered_rulebooks_load_from_default_directory() -> None:
     loader = RulebookLoader()
@@ -19,8 +27,26 @@ def test_registered_rulebooks_load_from_default_directory() -> None:
         rulebook = loader.load(name)
 
         assert rulebook.name == name
-        assert rulebook.status == "placeholder"
-        assert rulebook.version.startswith("placeholder-")
+        if name in PRODUCTION_SOURCE_EVENT_RULEBOOKS:
+            assert rulebook.status == "production"
+            assert rulebook.version.startswith("production-")
+            assert "Do not invent facts" in rulebook.body
+            assert "Preserve relevant quantitative information" in rulebook.body
+            assert "Preserve relevant links" in rulebook.body
+            assert "own timestamp determines the update month" in rulebook.body
+            assert "Extract only net-new facts" in rulebook.body
+            assert "same-month facts" in rulebook.body
+            assert "Acknowledgements" in rulebook.body
+            assert "Do not join update clauses with semicolons" in rulebook.body
+            assert "All generated updates enter Pending Updates first" in rulebook.body
+            if name == "source_event.jira":
+                assert (
+                    "Do not ignore a Jira comment solely because it is "
+                    "phrased as a request" in rulebook.body
+                )
+        else:
+            assert rulebook.status == "placeholder"
+            assert rulebook.version.startswith("placeholder-")
         assert len(rulebook.content_hash) == 64
         assert rulebook.trace_version == f"{rulebook.version}:{rulebook.content_hash[:12]}"
         assert "## Purpose" in rulebook.body

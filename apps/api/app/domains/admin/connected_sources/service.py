@@ -182,6 +182,7 @@ class AdminConnectedSourceApprovalService:
         source.disabled_at = now
         source.last_error_summary = clean_note(payload.note) or "Disabled by admin."
         source.updated_at = now
+        await self._archive_connected_source_resource_link(source, now)
         await self.db.commit()
         return await self._to_response(source)
 
@@ -351,6 +352,30 @@ class AdminConnectedSourceApprovalService:
             source_type
         )
         resource_link.archived_at = None
+        resource_link.updated_at = now
+
+    async def _archive_connected_source_resource_link(
+        self,
+        source: ConnectedSource,
+        now: datetime,
+    ) -> None:
+        if source.source_url is None:
+            return
+        source_type = ConnectedSourceType(source.source_type)
+        if source_type == ConnectedSourceType.slack_channel:
+            return
+
+        result = await self.db.execute(
+            select(PartnerResourceLink)
+            .where(PartnerResourceLink.partner_id == source.partner_id)
+            .where(PartnerResourceLink.url == source.source_url)
+            .where(PartnerResourceLink.source_kind == ResourceLinkSourceKind.connected_source.value)
+        )
+        resource_link = result.scalar_one_or_none()
+        if resource_link is None:
+            return
+
+        resource_link.archived_at = now
         resource_link.updated_at = now
 
 

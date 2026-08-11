@@ -95,6 +95,7 @@ async def test_presenter_metadata_is_read_only_for_single_partner() -> None:
         assert metadata.status == "amber"
         assert metadata.highlights_status == "Release validation needs attention."
         assert [risk.description for risk in metadata.risks] == ["Decision dependency"]
+        assert [resource.title for resource in metadata.resources] == ["AWS Jira"]
         assert metadata.resources[0].source_kind == ResourceLinkSourceKind.connected_source
         assert metadata.resources[0].disabled is False
 
@@ -211,6 +212,19 @@ async def create_presenter_fixture(
             created_by=presenter.user_id,
             created_at=now,
             updated_at=now,
+        )
+    )
+    session.add(
+        PartnerResourceLink(
+            partner_id=partner_a.partner_id,
+            title="Archived AWS Jira",
+            url="https://jira.example.com/browse/AWS-502",
+            description="Disabled connected ticket",
+            source_kind=ResourceLinkSourceKind.connected_source.value,
+            created_by=presenter.user_id,
+            created_at=now,
+            updated_at=now,
+            archived_at=now,
         )
     )
     await session.commit()

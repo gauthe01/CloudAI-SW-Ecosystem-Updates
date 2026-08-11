@@ -20,10 +20,12 @@ from .rulebooks import source_event_rulebook_name
 
 SOURCE_EVENT_EXTRACTION_MODE_INFRASTRUCTURE_ONLY = "infrastructure_only"
 SOURCE_EVENT_EXTRACTION_MODE_DRY_RUN = "dry_run"
+SOURCE_EVENT_EXTRACTION_MODE_MODEL_WRITE = "model_write"
 RESULT_EXTRACTION_MODE_MODEL_DRY_RUN = "model_dry_run"
 SUPPORTED_SOURCE_EVENT_EXTRACTION_MODES = {
     SOURCE_EVENT_EXTRACTION_MODE_INFRASTRUCTURE_ONLY,
     SOURCE_EVENT_EXTRACTION_MODE_DRY_RUN,
+    SOURCE_EVENT_EXTRACTION_MODE_MODEL_WRITE,
     RESULT_EXTRACTION_MODE_MODEL_DRY_RUN,
 }
 
@@ -92,6 +94,7 @@ class SourceEventExtractionResult:
     model_decision: str | None = None
     ignore_reason: str | None = None
     draft_update_preview: dict[str, Any] | None = None
+    pending_update_command: dict[str, Any] | None = None
 
     def to_agent_output(self) -> dict[str, Any]:
         output = {
@@ -113,6 +116,8 @@ class SourceEventExtractionResult:
             output["ignore_reason"] = self.ignore_reason
         if self.draft_update_preview is not None:
             output["draft_update_preview"] = self.draft_update_preview
+        if self.pending_update_command is not None:
+            output["pending_update_command"] = self.pending_update_command
         return output
 
 
@@ -150,6 +155,12 @@ class SourceEventExtractionOrchestrator:
                 extraction_input=extraction_input,
                 rulebook=rulebook,
             )
+        if self.extraction_mode == SOURCE_EVENT_EXTRACTION_MODE_MODEL_WRITE:
+            return await self._model_write_extract(
+                source_event=source_event,
+                extraction_input=extraction_input,
+                rulebook=rulebook,
+            )
         return infrastructure_only_result(
             extraction_input=extraction_input,
             rulebook=rulebook,
@@ -179,6 +190,34 @@ class SourceEventExtractionOrchestrator:
             model_name=adapter.model_name,
             model_output=model_output,
             draft_update_preview=(
+                pending_update_command_preview(command) if command is not None else None
+            ),
+        )
+
+    async def _model_write_extract(
+        self,
+        *,
+        source_event: SourceEvent,
+        extraction_input: SourceEventExtractionInput,
+        rulebook: Rulebook,
+    ) -> SourceEventExtractionResult:
+        adapter = self.model_adapter or OpenAISourceEventModelAdapter(
+            runtime=build_ai_client_runtime(self.settings),
+            max_output_tokens=self.settings.ai_source_event_max_output_tokens,
+        )
+        model_output = validate_source_event_model_output(
+            await adapter.extract(extraction_input=extraction_input, rulebook=rulebook)
+        )
+        command = pending_update_command_from_model_output(
+            source_event=source_event,
+            model_output=model_output,
+        )
+        return model_write_result(
+            extraction_input=extraction_input,
+            rulebook=rulebook,
+            model_name=adapter.model_name,
+            model_output=model_output,
+            pending_update_command=(
                 pending_update_command_preview(command) if command is not None else None
             ),
         )
@@ -233,6 +272,11 @@ def build_source_event_extraction_input(
             "retention_policy": payload_reference.retention_policy,
             "has_structured_payload": payload_reference.has_structured_payload,
             "has_encrypted_text": payload_reference.has_encrypted_text,
+            "structured_payload": (
+                source_payload.raw_payload_json
+                if source_payload is not None and source_payload.raw_payload_json
+                else None
+            ),
             "storage_object_id": (
                 str(payload_reference.storage_object_id)
                 if payload_reference.storage_object_id is not None
@@ -286,6 +330,40 @@ def dry_run_result(
         model_decision=model_output.decision.value,
         ignore_reason=model_output.ignore_reason,
         draft_update_preview=draft_update_preview,
+    )
+
+
+def model_write_result(
+    *,
+    extraction_input: SourceEventExtractionInput,
+    rulebook: Rulebook,
+    model_name: str,
+    model_output: SourceEventModelOutput,
+    pending_update_command: dict[str, Any] | None,
+) -> SourceEventExtractionResult:
+    if pending_update_command is None:
+        reason = (
+            "Model output validated as ignore. No pending update should be created."
+        )
+    else:
+        reason = (
+            "Model output validated as create_update. Pending update command is ready "
+            "for contributor-reviewable persistence."
+        )
+    return SourceEventExtractionResult(
+        source_event_id=extraction_input.source_event_id,
+        pending_updates_created=0,
+        extraction_mode=SOURCE_EVENT_EXTRACTION_MODE_MODEL_WRITE,
+        rulebook_name=rulebook.name,
+        rulebook_version=rulebook.trace_version,
+        rulebook_status=rulebook.status,
+        input_fingerprint=extraction_input.input_fingerprint,
+        model_name=model_name,
+        reason=reason,
+        model_output_validated=True,
+        model_decision=model_output.decision.value,
+        ignore_reason=model_output.ignore_reason,
+        pending_update_command=pending_update_command,
     )
 
 

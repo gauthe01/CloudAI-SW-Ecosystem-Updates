@@ -60,6 +60,7 @@ from app.db.models.source_event import (
     SourcePayload,
     SourcePayloadRetentionPolicy,
 )
+from app.db.models.source_sync import SourceSyncRun, SourceSyncRunStatus, SourceSyncState
 from app.db.models.storage_object import StorageObject, StorageObjectSourceKind
 
 __all__ = [
@@ -101,6 +102,9 @@ __all__ = [
     "SourceEventStatus",
     "SourcePayload",
     "SourcePayloadRetentionPolicy",
+    "SourceSyncRun",
+    "SourceSyncRunStatus",
+    "SourceSyncState",
     "StorageObject",
     "StorageObjectSourceKind",
     "User",

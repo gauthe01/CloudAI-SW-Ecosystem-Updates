@@ -44,6 +44,16 @@ RULEBOOK_MANIFEST: dict[str, RulebookManifestEntry] = {
         filename="presenter_intelligence.md",
         description="Presenter intelligence synthesis guidance.",
     ),
+    "presenter_chatbot": RulebookManifestEntry(
+        name="presenter_chatbot",
+        filename="presenter_chatbot.md",
+        description="Grounded presenter Ask AI chatbot guidance.",
+    ),
+    "presenter_executive_summary": RulebookManifestEntry(
+        name="presenter_executive_summary",
+        filename="presenter_executive_summary.md",
+        description="Presenter executive summary generation guidance.",
+    ),
     "executive_email": RulebookManifestEntry(
         name="executive_email",
         filename="executive_email.md",

@@ -3,6 +3,7 @@
 import { Dispatch, ReactNode, SetStateAction, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { GlobalLoader } from "@/components/foundation/GlobalLoader";
 import { AccountMenu } from "@/components/navigation/AccountMenu";
 import { AppTopNav } from "@/components/navigation/AppTopNav";
 import { PartnerNavSelect } from "@/components/navigation/PartnerNavSelect";
@@ -29,6 +30,7 @@ import {
 import { PresenterWorkspacePanel } from "@/features/presenter/PresenterWorkspacePanel";
 import {
   PresenterPartner,
+  PresenterPeriodQuery,
   listPresenterPartners,
 } from "@/features/presenter/presenter-api";
 import {
@@ -53,10 +55,16 @@ export function AccountViewShell() {
   );
   const [contributorPartnersLoading, setContributorPartnersLoading] = useState(false);
   const [contributorPartnersError, setContributorPartnersError] = useState<string | null>(null);
-  const [presenterCycle, setPresenterCycle] = useState(currentCycle());
+  const [presenterPeriod, setPresenterPeriod] = useState<PresenterPeriodQuery>({
+    cycle: currentCycle(),
+    dateStart: null,
+    dateEnd: null,
+  });
   const [presenterPartners, setPresenterPartners] = useState<PresenterPartner[]>([]);
   const [selectedPresenterPartnerIds, setSelectedPresenterPartnerIds] = useState<string[]>([]);
   const [presenterPartnersLoading, setPresenterPartnersLoading] = useState(false);
+  const [presenterAskAiOpen, setPresenterAskAiOpen] = useState(false);
+  const [presenterEmailRequestKey, setPresenterEmailRequestKey] = useState(0);
   const [adminHeaderAction, setAdminHeaderAction] = useState<ReactNode | null>(null);
 
   useEffect(() => {
@@ -139,7 +147,7 @@ export function AccountViewShell() {
     let mounted = true;
     setPresenterPartnersLoading(true);
 
-    listPresenterPartners(presenterCycle)
+    listPresenterPartners(presenterPeriod)
       .then((partners) => {
         if (!mounted) {
           return;
@@ -166,7 +174,7 @@ export function AccountViewShell() {
     return () => {
       mounted = false;
     };
-  }, [authContext?.active_view, presenterCycle]);
+  }, [authContext?.active_view, presenterPeriod]);
 
   async function handleSwitchView(view: AccountView) {
     if (!authContext || view === authContext.active_view) {
@@ -197,7 +205,10 @@ export function AccountViewShell() {
   if (loading) {
     return (
       <main className="workspace-shell loading-shell">
-        <p>Loading workspace</p>
+        <GlobalLoader
+          label="Loading workspace"
+          detail="Preparing your Cloud AI ecosystem view."
+        />
       </main>
     );
   }
@@ -211,7 +222,7 @@ export function AccountViewShell() {
   const selectedSection = activeSections.includes(activeSection)
     ? activeSection
     : activeView === "presenter"
-      ? "Partner Intelligence"
+      ? "Partner Updates"
       : activeSections[0];
   const selectedSectionLabel =
     activeView === "admin"
@@ -242,7 +253,9 @@ export function AccountViewShell() {
           ? "workspace-shell contributor-view-shell contributor-selection-shell"
           : isContributorView
             ? "workspace-shell contributor-view-shell"
-            : "workspace-shell"
+            : isPresenterView
+              ? "workspace-shell presenter-view-shell"
+              : "workspace-shell"
       }
     >
       <AppTopNav
@@ -279,7 +292,15 @@ export function AccountViewShell() {
 
       {error ? <p className="workspace-error">{error}</p> : null}
 
-      {!isContributorView && activeView !== "admin" ? (
+      {isPresenterView ? (
+        <PresenterSectionTabs
+          activeSection={selectedSection}
+          askAiOpen={presenterAskAiOpen}
+          onEmailOpen={() => setPresenterEmailRequestKey((current) => current + 1)}
+          onAskAiToggle={() => setPresenterAskAiOpen((current) => !current)}
+          onChange={setActiveSection}
+        />
+      ) : !isContributorView && activeView !== "admin" ? (
         <SectionTabs
           activeTabId={selectedSection}
           ariaLabel={`${viewLabels[activeView]} sections`}
@@ -328,25 +349,33 @@ export function AccountViewShell() {
                 {adminHeaderAction}
               </div>
             ) : null}
-            <div className="workspace-heading-row">
-              <div>
-                <p className="eyebrow">Current Workspace</p>
-                <h2 id="workspace-content-title">
-                  {activeView === "admin" && !isAdminConsoleHome
-                    ? `Admin Console - ${selectedSectionLabel}`
-                    : selectedSectionLabel}
-                </h2>
+            {isPresenterView ? (
+              <h2 id="workspace-content-title" className="visually-hidden">
+                {selectedSectionLabel}
+              </h2>
+            ) : (
+              <div className="workspace-heading-row">
+                <div>
+                  <p className="eyebrow">Current Workspace</p>
+                  <h2 id="workspace-content-title">
+                    {activeView === "admin" && !isAdminConsoleHome
+                      ? `Admin Console - ${selectedSectionLabel}`
+                      : selectedSectionLabel}
+                  </h2>
+                </div>
               </div>
-            </div>
+            )}
             {isAdminConsoleHome ? (
               <AdminControlPlanePanel onSelectModule={setActiveSection} />
             ) : isPresenterView ? (
               <PresenterWorkspacePanel
-                cycle={presenterCycle}
-                onCycleChange={setPresenterCycle}
+                askAiOpen={presenterAskAiOpen}
+                emailRequestKey={presenterEmailRequestKey}
+                onAskAiClose={() => setPresenterAskAiOpen(false)}
                 onPartnerSelectionChange={setSelectedPresenterPartnerIds}
-                onSectionChange={setActiveSection}
+                onPeriodChange={setPresenterPeriod}
                 partners={presenterPartners}
+                period={presenterPeriod}
                 section={selectedSection}
                 selectedPartnerIds={selectedPresenterPartnerIds}
               />
@@ -357,6 +386,59 @@ export function AccountViewShell() {
         )}
       </section>
     </main>
+  );
+}
+
+const presenterMainTabs = ["Partner Updates", "Executive Summary", "Decision Board", "Event Calendar"];
+
+function PresenterSectionTabs({
+  activeSection,
+  askAiOpen,
+  onEmailOpen,
+  onAskAiToggle,
+  onChange,
+}: {
+  activeSection: string;
+  askAiOpen: boolean;
+  onEmailOpen: () => void;
+  onAskAiToggle: () => void;
+  onChange: (section: string) => void;
+}) {
+  return (
+    <nav className="presenter-dashboard-tabs" aria-label="Presenter dashboard tabs">
+      {presenterMainTabs.map((tab) => (
+        <button
+          key={tab}
+          type="button"
+          className={activeSection === tab ? "active" : ""}
+          onClick={() => onChange(tab)}
+        >
+          <span>{tab}</span>
+        </button>
+      ))}
+      <button
+        type="button"
+        className="presenter-email-tab-action"
+        aria-label="Draft Email"
+        title="Draft Email"
+        onClick={onEmailOpen}
+      >
+        <svg className="presenter-email-icon" aria-hidden="true" viewBox="0 0 24 18">
+          <path d="M2.75 2.25h18.5v13.5H2.75z" />
+          <path d="m3.5 3 8.5 6.5L20.5 3" />
+          <path d="m3.75 15 6.1-5.35" />
+          <path d="m20.25 15-6.1-5.35" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        className={askAiOpen ? "presenter-tab-ask-ai active" : "presenter-tab-ask-ai"}
+        onClick={onAskAiToggle}
+      >
+        <span className="presenter-ai-spark" aria-hidden="true" />
+        <span>Ask AI</span>
+      </button>
+    </nav>
   );
 }
 

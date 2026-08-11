@@ -138,5 +138,5 @@ function getPartnerInitials(name: string) {
 
 function formatUpdateCount(value: number | undefined) {
   const count = value ?? 0;
-  return `${count} update${count === 1 ? "" : "s"}`;
+  return `${count} pending update${count === 1 ? "" : "s"}`;
 }

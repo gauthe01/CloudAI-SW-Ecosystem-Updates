@@ -2,7 +2,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.extraction import build_source_event_extraction_handler
 from app.db.models.connected_source import ConnectedSource, ConnectedSourceStatus
+from app.db.models.partner_update import PartnerUpdate, PartnerUpdateStatus
 from app.db.models.source_event import (
     AgentRun,
     AgentRunStatus,
@@ -145,6 +146,10 @@ class SourceEventQueueService:
             output = await (
                 handler or default_source_event_handler
             )(source_event, source_payload)
+            await self._create_pending_update_from_agent_output(
+                source_event=source_event,
+                output=output,
+            )
         except Exception as exc:
             return await self._mark_processing_failed(
                 source_event=source_event,
@@ -258,6 +263,63 @@ class SourceEventQueueService:
         )
         return result.scalar_one_or_none()
 
+    async def _create_pending_update_from_agent_output(
+        self,
+        *,
+        source_event: SourceEvent,
+        output: dict[str, Any],
+    ) -> None:
+        command = output.get("pending_update_command")
+        if not isinstance(command, dict):
+            output["pending_updates_created"] = int(output.get("pending_updates_created") or 0)
+            return
+
+        source_event_key = require_command_text(command, "source_event_key")
+        existing_update = await self._find_existing_update(source_event_key)
+        if existing_update is not None:
+            output["pending_updates_created"] = 0
+            output["pending_update_duplicate"] = True
+            output["existing_update_id"] = str(existing_update.update_id)
+            return
+
+        now = datetime.now(UTC)
+        command_partner_id = uuid.UUID(require_command_text(command, "partner_id"))
+        command_connected_source_id = uuid.UUID(
+            require_command_text(command, "connected_source_id")
+        )
+        if command_partner_id != source_event.partner_id:
+            raise ValueError("Agent pending update command partner_id does not match source event.")
+        if command_connected_source_id != source_event.connected_source_id:
+            raise ValueError(
+                "Agent pending update command connected_source_id does not match source event."
+            )
+
+        update = PartnerUpdate(
+            partner_id=command_partner_id,
+            cycle_month=parse_command_date(command, "cycle_month"),
+            title=require_command_text(command, "title"),
+            summary=require_command_text(command, "summary"),
+            source_type=require_command_text(command, "source_type"),
+            source_label=clean_optional(command.get("source_label")),
+            source_url=clean_optional(command.get("source_url")),
+            source_event_key=source_event_key,
+            connected_source_id=command_connected_source_id,
+            source_event_id=source_event.source_event_id,
+            status=PartnerUpdateStatus.pending.value,
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(update)
+        await self.db.flush()
+        output["pending_updates_created"] = 1
+        output["created_update_id"] = str(update.update_id)
+
+    async def _find_existing_update(self, source_event_key: str) -> PartnerUpdate | None:
+        result = await self.db.execute(
+            select(PartnerUpdate).where(PartnerUpdate.source_event_key == source_event_key)
+        )
+        return result.scalar_one_or_none()
+
 
 def build_source_payload(
     *,
@@ -270,8 +332,8 @@ def build_source_payload(
     created_at: datetime,
 ) -> SourcePayload | None:
     if (
-        source_type == "slack_channel"
-        or retention_policy == SourcePayloadRetentionPolicy.technical_metadata_only.value
+        retention_policy == SourcePayloadRetentionPolicy.technical_metadata_only.value
+        or (source_type == "slack_channel" and retention_policy is None)
     ):
         return SourcePayload(
             source_event_id=source_event_id,
@@ -354,6 +416,21 @@ def clean_optional(value: Any) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def require_command_text(command: dict[str, Any], key: str) -> str:
+    value = clean_optional(command.get(key))
+    if value is None:
+        raise ValueError(f"Agent pending update command is missing {key!r}.")
+    return value
+
+
+def parse_command_date(command: dict[str, Any], key: str) -> date:
+    value = require_command_text(command, key)
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"Agent pending update command has invalid {key!r}.") from exc
 
 
 def source_event_to_response(source_event: SourceEvent) -> SourceEventResponse:

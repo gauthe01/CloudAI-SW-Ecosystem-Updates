@@ -38,7 +38,11 @@ def test_valid_create_output_converts_to_pending_update_command() -> None:
             "decision": "create_update",
             "draft_update": {
                 "title": " AWS validation moved to partner review ",
-                "summary": " The Jira ticket now shows validation ready for review. ",
+                "summary": (
+                    " The Jira ticket now shows validation ready for review.\n"
+                    "See https://jira.example.com/browse/AWS-123 "
+                ),
+                "cycle_month": "2026-07-01",
                 "source_label": " AWS-123 ",
                 "source_url": "https://jira.example.com/browse/AWS-123",
                 "reasoning_category": "status_change",
@@ -57,9 +61,15 @@ def test_valid_create_output_converts_to_pending_update_command() -> None:
 
     assert command is not None
     assert command.partner_id == source_event.partner_id
-    assert command.cycle_month.isoformat() == "2026-08-01"
+    assert command.cycle_month.isoformat() == "2026-07-01"
     assert command.title == "AWS validation moved to partner review"
-    assert command.summary == "The Jira ticket now shows validation ready for review."
+    assert command.summary == (
+        "<ul>"
+        "<li>The Jira ticket now shows validation ready for review.</li>"
+        '<li>See <a href="https://jira.example.com/browse/AWS-123">'
+        "https://jira.example.com/browse/AWS-123</a></li>"
+        "</ul>"
+    )
     assert command.source_type == PartnerUpdateSourceType.jira
     assert command.source_label == "AWS-123"
     assert command.source_url == "https://jira.example.com/browse/AWS-123"
@@ -73,9 +83,151 @@ def test_valid_create_output_converts_to_pending_update_command() -> None:
     assert command.dedupe_key_hint == "AWS-123:status-review"
 
 
+def test_semicolon_joined_plain_text_summary_splits_into_bullets() -> None:
+    source_event = make_source_event(source_type="jira_issue")
+    output = validate_source_event_model_output(
+        {
+            "decision": "create_update",
+            "draft_update": {
+                "title": "SAP AGI CPU evaluation",
+                "summary": (
+                    "SAP's AGI CPU evaluation is starting while legal teams "
+                    "work through equipment loan and collaboration agreements; "
+                    "current timeline may provide SAP with a CRB in Aug./Sept. "
+                    "and 4 QS A1 systems for performance benchmarking in October."
+                ),
+                "confidence": 0.9,
+            },
+        }
+    )
+
+    command = pending_update_command_from_model_output(
+        source_event=source_event,
+        model_output=output,
+    )
+
+    assert command is not None
+    assert command.summary == (
+        "<ul>"
+        "<li>SAP&#x27;s AGI CPU evaluation is starting while legal teams work through "
+        "equipment loan and collaboration agreements</li>"
+        "<li>current timeline may provide SAP with a CRB in Aug./Sept. and 4 QS A1 "
+        "systems for performance benchmarking in October.</li>"
+        "</ul>"
+    )
+
+
+def test_semicolon_joined_html_summary_splits_into_bullets() -> None:
+    source_event = make_source_event(source_type="jira_issue")
+    output = validate_source_event_model_output(
+        {
+            "decision": "create_update",
+            "draft_update": {
+                "title": "SAP AGI CPU evaluation",
+                "summary": (
+                    "<ul><li>SAP's AGI CPU evaluation is starting; current timeline "
+                    "may provide SAP with a CRB in Aug./Sept.</li></ul>"
+                ),
+                "confidence": 0.9,
+            },
+        }
+    )
+
+    command = pending_update_command_from_model_output(
+        source_event=source_event,
+        model_output=output,
+    )
+
+    assert command is not None
+    assert command.summary == (
+        "<ul>"
+        "<li>SAP's AGI CPU evaluation is starting</li>"
+        "<li>current timeline may provide SAP with a CRB in Aug./Sept.</li>"
+        "</ul>"
+    )
+
+
+def test_placeholder_source_label_falls_back_to_source_metadata() -> None:
+    source_event = make_source_event(source_type="jira_issue")
+    source_event.technical_metadata = {
+        "issue_summary": "SVE Developer Content/Training Course to address SAP Hana feedback"
+    }
+    output = validate_source_event_model_output(
+        {
+            "decision": "create_update",
+            "draft_update": {
+                "title": "Action request",
+                "summary": "Target dates requested.",
+                "source_label": "Jira link title",
+                "confidence": 0.0,
+            },
+        }
+    )
+
+    command = pending_update_command_from_model_output(
+        source_event=source_event,
+        model_output=output,
+    )
+
+    assert command is not None
+    assert (
+        command.source_label
+        == "SVE Developer Content/Training Course to address SAP Hana feedback"
+    )
+
+
+def test_generic_jira_key_source_label_falls_back_to_source_metadata() -> None:
+    source_event = make_source_event(source_type="jira_issue")
+    source_event.technical_metadata = {
+        "source_items": [
+            {
+                "type": "issue_summary",
+                "text": "SVE Developer Content/Training Course to address SAP Hana feedback",
+            }
+        ]
+    }
+    output = validate_source_event_model_output(
+        {
+            "decision": "create_update",
+            "draft_update": {
+                "title": "Progress update",
+                "summary": "Course material is in review.",
+                "source_label": "Jira STESOL-431",
+                "confidence": 0.8,
+            },
+        }
+    )
+
+    command = pending_update_command_from_model_output(
+        source_event=source_event,
+        model_output=output,
+    )
+
+    assert command is not None
+    assert (
+        command.source_label
+        == "SVE Developer Content/Training Course to address SAP Hana feedback"
+    )
+
+
 def test_create_output_requires_draft_update() -> None:
     with pytest.raises(ExtractionOutputValidationError, match="create_update"):
         validate_source_event_model_output({"decision": "create_update"})
+
+
+def test_create_output_rejects_non_month_start_cycle_month() -> None:
+    with pytest.raises(ExtractionOutputValidationError, match="cycle_month"):
+        validate_source_event_model_output(
+            {
+                "decision": "create_update",
+                "draft_update": {
+                    "title": "Invalid cycle month",
+                    "summary": "Cycle month must be month-start.",
+                    "cycle_month": "2026-07-15",
+                    "confidence": 0.8,
+                },
+            }
+        )
 
 
 def test_ignore_output_rejects_draft_update() -> None:

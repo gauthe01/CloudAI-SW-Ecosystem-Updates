@@ -44,6 +44,23 @@ def test_model_request_uses_reference_payload_and_output_contract() -> None:
     assert request["mode"] == "dry_run_validation"
     assert request["rulebook"]["name"] == "source_event.jira"
     assert request["output_contract"]["decision"] == ["ignore", "create_update"]
+    assert "cycle_month" in request["output_contract"]["create_update"]["draft_update_optional_fields"]
+    assert any(
+        "Extract only net-new facts" in constraint
+        for constraint in request["hard_constraints"]
+    )
+    assert any(
+        "Do not treat acknowledgements" in constraint
+        for constraint in request["hard_constraints"]
+    )
+    assert any(
+        "Do not extract facts from acknowledgement clauses" in constraint
+        for constraint in request["hard_constraints"]
+    )
+    assert any(
+        "Do not join update clauses with semicolons" in constraint
+        for constraint in request["hard_constraints"]
+    )
     assert request["input"]["payload"]["payload_available"] is True
     assert request["input"]["payload"]["has_structured_payload"] is True
     assert "raw payload should not be copied" not in str(request)
@@ -105,7 +122,7 @@ async def test_dry_run_create_output_records_preview_without_creating_updates() 
         "partner_id": str(source_event.partner_id),
         "cycle_month": "2026-08-01",
         "title": "AWS validation moved to review",
-        "summary": "The linked Jira event indicates validation is ready for review.",
+        "summary": "<ul><li>The linked Jira event indicates validation is ready for review.</li></ul>",
         "source_type": "jira",
         "source_label": "AWS-123",
         "source_url": "https://jira.example.com/browse/AWS-123",
@@ -122,6 +139,76 @@ async def test_dry_run_create_output_records_preview_without_creating_updates() 
 
 
 @pytest.mark.asyncio
+async def test_model_write_create_output_returns_pending_update_command() -> None:
+    source_event = make_source_event(source_type="jira_issue")
+    orchestrator = SourceEventExtractionOrchestrator(
+        settings=settings_with(ai_source_event_extraction_mode="model_write"),
+        model_adapter=FakeModelAdapter(
+            {
+                "decision": "create_update",
+                "draft_update": {
+                    "title": "AWS validation moved to review",
+                    "summary": "AWS validation moved to review.\n2 partner tasks remain.",
+                    "cycle_month": "2026-07-01",
+                    "source_label": "AWS-123",
+                    "source_url": "https://jira.example.com/browse/AWS-123",
+                    "reasoning_category": "progress",
+                    "confidence": 0.91,
+                    "needs_human_attention": False,
+                    "event_importance": "medium",
+                    "dedupe_key_hint": "AWS-123:review",
+                },
+            }
+        ),
+    )
+
+    result = await orchestrator.extract(source_event, None)
+    output = result.to_agent_output()
+
+    assert result.pending_updates_created == 0
+    assert output["extraction_mode"] == "model_write"
+    assert output["model_decision"] == "create_update"
+    assert output["pending_update_command"] == {
+        "partner_id": str(source_event.partner_id),
+        "cycle_month": "2026-07-01",
+        "title": "AWS validation moved to review",
+        "summary": "<ul><li>AWS validation moved to review.</li><li>2 partner tasks remain.</li></ul>",
+        "source_type": "jira",
+        "source_label": "AWS-123",
+        "source_url": "https://jira.example.com/browse/AWS-123",
+        "source_event_key": source_event.idempotency_key,
+        "connected_source_id": str(source_event.connected_source_id),
+        "source_event_id": str(source_event.source_event_id),
+        "reasoning_category": "progress",
+        "confidence": 0.91,
+        "needs_human_attention": False,
+        "event_importance": "medium",
+        "dedupe_key_hint": "AWS-123:review",
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_write_ignore_output_returns_no_pending_update_command() -> None:
+    orchestrator = SourceEventExtractionOrchestrator(
+        settings=settings_with(ai_source_event_extraction_mode="model_write"),
+        model_adapter=FakeModelAdapter(
+            {
+                "decision": "ignore",
+                "ignore_reason": "Acknowledgement-only activity.",
+            }
+        ),
+    )
+
+    result = await orchestrator.extract(make_source_event(source_type="slack_channel"), None)
+    output = result.to_agent_output()
+
+    assert output["extraction_mode"] == "model_write"
+    assert output["model_decision"] == "ignore"
+    assert output["pending_updates_created"] == 0
+    assert "pending_update_command" not in output
+
+
+@pytest.mark.asyncio
 async def test_dry_run_invalid_output_fails_closed() -> None:
     orchestrator = SourceEventExtractionOrchestrator(
         settings=settings_with(ai_source_event_extraction_mode="dry_run"),
@@ -134,6 +221,7 @@ async def test_dry_run_invalid_output_fails_closed() -> None:
 
 def test_extraction_mode_normalization_rejects_unknown_modes() -> None:
     assert normalize_source_event_extraction_mode("model-dry-run") == "model_dry_run"
+    assert normalize_source_event_extraction_mode("model-write") == "model_write"
 
     with pytest.raises(ValueError, match="AI_SOURCE_EVENT_EXTRACTION_MODE"):
         normalize_source_event_extraction_mode("auto_create")

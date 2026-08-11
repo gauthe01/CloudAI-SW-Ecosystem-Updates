@@ -93,6 +93,43 @@ Required next steps:
 - Confirm a real repository, issue, or pull request event creates a Pending
   Update for the matching approved source.
 
+### Feature 23E - AWS Background Source Sync Rollout
+
+Status: blocked by AWS access/configuration and production enablement decision.
+
+Feature 23E is implemented and validated locally, including the
+`source-sync-worker`, sync state tables, sync run audit tables, Jira polling,
+Slack polling, cursor persistence, and duplicate-safe source-event enqueueing.
+AWS rollout is not blocked by localhost code; it is blocked by the production
+deployment environment and the decision about when to allow model-created
+Pending Updates.
+
+Current blockers:
+
+- Resolve the AWS VPC/security-group/connectivity issue so EC2 or the selected
+  AWS runtime can be reached and verified.
+- Confirm production runtime choice for the background worker:
+  - EC2 plus Docker Compose service, or
+  - ECS/Fargate service with desired count `1`.
+- Provide production-safe secrets through AWS Secrets Manager, SSM Parameter
+  Store, or the approved deployment environment:
+  - `DATABASE_URL`
+  - Jira credentials/config
+  - Slack bot token/config
+  - OpenAI-compatible endpoint/key/config
+  - source sync environment variables
+- Run Alembic migration `0013_source_sync` against the production database
+  before starting the worker.
+- Start `source-sync-worker` as a persistent process using:
+  - `python -m app.workers.source_sync`
+- Keep `AI_SOURCE_EVENT_EXTRACTION_MODE=infrastructure_only` for the first AWS
+  verification pass unless the product owner explicitly approves
+  `model_write`.
+- Verify production sync runs in `source_sync_runs` and cursor state in
+  `source_sync_states` before enabling model-created Pending Updates.
+- Add CloudWatch or equivalent logs/alerts for failed sync runs, consecutive
+  failures, missing successful syncs, auth failures, and worker restarts.
+
 ### Test Data Isolation
 
 Status: resolved locally.
@@ -110,6 +147,40 @@ Required next steps:
 - Consider a disposable containerized test database later for CI.
 
 ## Product / UX Tasks
+
+### Feature 26 - Global Loading Experience
+
+Status: implemented locally.
+
+Feature 26 adds a reusable animated `GlobalLoader` component for screen-level
+and module-level wait states.
+
+Implemented coverage:
+
+- Presenter Executive Summary generation.
+- Presenter Decision Board generation.
+- Presenter Partner Intelligence loading.
+- Presenter Event Calendar loading.
+- Presenter Draft Email generation.
+- Initial workspace loading.
+- Contributor assigned partner, dashboard, and metadata loading.
+
+### Feature 25 - Presenter Chatbot Rulebook Interview
+
+Status: planned.
+
+Create a separate interview-style feature that asks the product owner focused
+questions and converts approved answers into a draft Presenter Ask AI chatbot
+rulebook.
+
+Required next steps:
+
+- Build an interview entry point from the Presenter Ask AI area.
+- Ask one rulebook question at a time and save the answers as draft decisions.
+- Let the product owner edit or reject captured rulebook decisions.
+- Generate a markdown rulebook preview before applying anything.
+- Keep the active chatbot rulebook unchanged until explicit approval.
+- Store version history for generated rulebooks.
 
 ### UI Visual Parity
 
@@ -285,6 +356,52 @@ Required next steps:
   approvals.
 - Decide whether to implement Feature 23C as a separate rulebook-content update
   before Feature 24.
+
+### Feature 23E - Automatic Background Source Sync
+
+Status: implemented locally; pending AWS rollout and model-write enablement.
+
+Feature 23E adds an always-on source sync worker rather than a cron job. The
+worker wakes up every `SOURCE_SYNC_POLL_SECONDS`, finds active connected
+sources whose `next_sync_at` is due, syncs up to `SOURCE_SYNC_BATCH_SIZE`
+sources, writes sync audit records, stores source cursors, enqueues source
+events idempotently, and schedules the next source run using
+`SOURCE_SYNC_INTERVAL_SECONDS`.
+
+Current local defaults:
+
+- `SOURCE_SYNC_ENABLED=true`
+- `SOURCE_SYNC_POLL_SECONDS=30`
+- `SOURCE_SYNC_INTERVAL_SECONDS=300`
+- `SOURCE_SYNC_BATCH_SIZE=25`
+- `SOURCE_SYNC_INITIAL_LOOKBACK_DAYS=365`
+- `SOURCE_SYNC_HTTP_TIMEOUT_SECONDS=30`
+
+Implemented locally:
+
+- Background worker entrypoint: `python -m app.workers.source_sync`.
+- Docker Compose service: `source-sync-worker`.
+- Sync state table: `source_sync_states`.
+- Sync run audit table: `source_sync_runs`.
+- Jira issue polling with comment/changelog timestamps and cursor tracking.
+- Slack channel polling with message timestamps and cursor tracking.
+- Duplicate-safe enqueueing through the source-event queue.
+- Structured source payload forwarding into extraction so facts, links,
+  quantities, and timestamps remain grounded.
+- Tests for Jira/Slack sync, disabled-source skip behavior, cursor filtering,
+  source timestamps, and structured payload retention.
+
+Required next steps:
+
+- Deploy `source-sync-worker` to AWS as a persistent background service.
+- Run migration `0013_source_sync` in AWS before worker startup.
+- Confirm Jira and Slack production credentials can be reached from the AWS
+  network.
+- Keep first AWS verification in `infrastructure_only` mode.
+- After product approval, switch to `AI_SOURCE_EVENT_EXTRACTION_MODE=model_write`
+  so synced source events can create contributor-reviewable Pending Updates.
+- Add provider-specific automatic polling for any source type that should not
+  rely only on webhook delivery.
 
 ### Feature 24A - Agent Extraction Infrastructure
 

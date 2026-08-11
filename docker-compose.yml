@@ -56,6 +56,22 @@ services:
       - upload_data:/app/var/uploads
       - ./certs:/app/certs:ro
 
+  source-sync-worker:
+    build:
+      context: ./apps/api
+    command: ["python", "-m", "app.workers.source_sync"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/cloud_ai_software_ecosystem_updates
+      LOCAL_UPLOAD_STORAGE_DIR: /app/var/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - upload_data:/app/var/uploads
+      - ./certs:/app/certs:ro
+
   web:
     build:
       context: .

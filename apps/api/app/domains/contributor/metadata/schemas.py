@@ -33,13 +33,26 @@ class PartnerResourceLinkPayload(BaseModel):
 
 class PartnerMetadataSaveRequest(BaseModel):
     status: PartnerHealthStatus | None = None
-    why_this_partner: str | None = Field(default=None, max_length=12000)
-    business_priority: str | None = Field(default=None, max_length=12000)
-    highlights_status: str | None = Field(default=None, max_length=12000)
-    goals: str | None = Field(default=None, max_length=12000)
+    why_this_partner: str = Field(min_length=1, max_length=12000)
+    business_priority: str = Field(min_length=1, max_length=12000)
+    highlights_status: str = Field(min_length=1, max_length=12000)
+    goals: str = Field(min_length=1, max_length=12000)
     execution_timeline: str | None = Field(default=None, max_length=12000)
     risks: list[PartnerMetadataRiskPayload] = Field(default_factory=list, max_length=50)
     resources: list[PartnerResourceLinkPayload] = Field(default_factory=list, max_length=100)
+
+    @field_validator(
+        "why_this_partner",
+        "business_priority",
+        "highlights_status",
+        "goals",
+    )
+    @classmethod
+    def required_metadata_field_must_be_clean(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("This metadata field is required.")
+        return cleaned
 
 
 class PartnerMetadataRiskResponse(BaseModel):

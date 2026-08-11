@@ -2,6 +2,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
+import re
+from html import escape
 from typing import Any, Self
 
 from pydantic import (
@@ -16,6 +18,18 @@ from pydantic import (
 
 from app.db.models.partner_update import PartnerUpdateSourceType
 from app.db.models.source_event import SourceEvent
+
+URL_PATTERN = re.compile(r"https?://[^\s<>)]+")
+LEADING_BULLET_PATTERN = re.compile(r"^\s*(?:[-*]|\d+[.)]|•)\s+")
+HTML_LIST_ITEM_PATTERN = re.compile(r"<li>(.*?)</li>", re.IGNORECASE | re.DOTALL)
+SEMICOLON_CLAUSE_PATTERN = re.compile(r";\s+")
+PLACEHOLDER_SOURCE_LABELS = {
+    "jira link title",
+    "link title",
+    "source link title",
+    "source title",
+}
+JIRA_KEY_LABEL_PATTERN = re.compile(r"^jira\s+[A-Z][A-Z0-9]+-\d+$", re.IGNORECASE)
 
 
 class ExtractionDecision(StrEnum):
@@ -38,6 +52,7 @@ class DraftUpdateOutput(BaseModel):
 
     title: str = Field(min_length=1, max_length=300)
     summary: str = Field(min_length=1, max_length=12000)
+    cycle_month: date | None = None
     source_label: str | None = Field(default=None, max_length=240)
     source_url: HttpUrl | None = None
     reasoning_category: str | None = Field(default=None, max_length=120)
@@ -53,6 +68,13 @@ class DraftUpdateOutput(BaseModel):
         if not cleaned:
             raise ValueError("Value must not be blank.")
         return cleaned
+
+    @field_validator("cycle_month")
+    @classmethod
+    def require_month_start(cls, value: date | None) -> date | None:
+        if value is not None and value.day != 1:
+            raise ValueError("cycle_month must be the first day of the month.")
+        return value
 
     @field_validator("source_label", "reasoning_category", "dedupe_key_hint")
     @classmethod
@@ -129,11 +151,17 @@ def pending_update_command_from_model_output(
 
     return PendingUpdateDraftCommand(
         partner_id=source_event.partner_id,
-        cycle_month=source_event.source_event_timestamp.date().replace(day=1),
+        cycle_month=(
+            model_output.draft_update.cycle_month
+            or source_event.source_event_timestamp.date().replace(day=1)
+        ),
         title=model_output.draft_update.title,
-        summary=model_output.draft_update.summary,
+        summary=format_model_update_summary(model_output.draft_update.summary),
         source_type=partner_update_source_type_for_source_event(source_event.source_type),
-        source_label=model_output.draft_update.source_label,
+        source_label=normalize_source_label(
+            model_output.draft_update.source_label,
+            source_event=source_event,
+        ),
         source_url=(
             str(model_output.draft_update.source_url)
             if model_output.draft_update.source_url is not None
@@ -148,6 +176,91 @@ def pending_update_command_from_model_output(
         event_importance=model_output.draft_update.event_importance,
         dedupe_key_hint=model_output.draft_update.dedupe_key_hint,
     )
+
+
+def format_model_update_summary(summary: str) -> str:
+    cleaned = summary.strip()
+    if not cleaned:
+        return cleaned
+    if cleaned.lower().startswith(("<ul", "<ol")):
+        return normalize_html_list_summary(cleaned)
+
+    lines = [
+        clause
+        for line in cleaned.splitlines()
+        if line.strip()
+        for clause in split_semicolon_clauses(LEADING_BULLET_PATTERN.sub("", line.strip()))
+    ]
+    if not lines:
+        return cleaned
+    return "<ul>" + "".join(f"<li>{linkify_escaped_text(line)}</li>" for line in lines) + "</ul>"
+
+
+def normalize_html_list_summary(summary: str) -> str:
+    list_items = HTML_LIST_ITEM_PATTERN.findall(summary)
+    if not list_items:
+        return summary
+
+    split_items = [
+        clause
+        for item in list_items
+        for clause in split_semicolon_clauses(item.strip())
+    ]
+    if not split_items:
+        return summary
+    return "<ul>" + "".join(f"<li>{item}</li>" for item in split_items) + "</ul>"
+
+
+def split_semicolon_clauses(value: str) -> list[str]:
+    clauses = [clause.strip() for clause in SEMICOLON_CLAUSE_PATTERN.split(value) if clause.strip()]
+    return clauses or [value]
+
+
+def linkify_escaped_text(value: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    for match in URL_PATTERN.finditer(value):
+        url = match.group(0).rstrip(".,;")
+        trailing = match.group(0)[len(url) :]
+        parts.append(escape(value[cursor : match.start()]))
+        escaped_url = escape(url, quote=True)
+        parts.append(f'<a href="{escaped_url}">{escape(url)}</a>')
+        parts.append(escape(trailing))
+        cursor = match.end()
+    parts.append(escape(value[cursor:]))
+    return "".join(parts)
+
+
+def normalize_source_label(label: str | None, *, source_event: SourceEvent) -> str | None:
+    cleaned = label.strip() if label else None
+    if cleaned and not is_generic_source_label(cleaned):
+        return cleaned
+    return source_label_from_metadata(source_event.technical_metadata or {})
+
+
+def is_generic_source_label(label: str) -> bool:
+    return label.lower() in PLACEHOLDER_SOURCE_LABELS or bool(
+        JIRA_KEY_LABEL_PATTERN.fullmatch(label)
+    )
+
+
+def source_label_from_metadata(metadata: dict[str, Any]) -> str | None:
+    issue_summary = metadata.get("issue_summary")
+    if isinstance(issue_summary, str) and issue_summary.strip():
+        return issue_summary.strip()
+
+    source_items = metadata.get("source_items")
+    if isinstance(source_items, list):
+        for item in source_items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "issue_summary":
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+
+    return None
 
 
 def partner_update_source_type_for_source_event(source_type: str) -> PartnerUpdateSourceType:

@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { type FormEvent, type TextareaHTMLAttributes, useEffect, useRef, useState } from "react";
 
+import { GlobalLoader } from "@/components/foundation/GlobalLoader";
 import {
   PartnerHealthStatus,
   PartnerMetadata,
@@ -29,6 +30,17 @@ type MetadataFormState = {
   resources: EditableResource[];
 };
 
+type RequiredMetadataField =
+  | "why_this_partner"
+  | "business_priority"
+  | "highlights_status"
+  | "goals";
+
+type MetadataToast = {
+  message: string;
+  tone: "success" | "error";
+};
+
 type EditableTimelineRow = {
   local_id: string;
   milestone: string;
@@ -50,6 +62,7 @@ const statusOptions: { value: PartnerHealthStatus; label: string }[] = [
   { value: "amber", label: "Amber" },
   { value: "red", label: "Red" },
 ];
+const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export function ContributorPartnerMetadataPanel({
   partnerId,
@@ -58,14 +71,17 @@ export function ContributorPartnerMetadataPanel({
   const [form, setForm] = useState<MetadataFormState>(emptyForm());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [copying, setCopying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [toast, setToast] = useState<MetadataToast | null>(null);
+  const [missingRequiredFields, setMissingRequiredFields] = useState<RequiredMetadataField[]>([]);
 
   useEffect(() => {
     let mounted = true;
     setLoading(true);
     setError(null);
-    setNotice(null);
+    setToast(null);
+    setMissingRequiredFields([]);
 
     getContributorPartnerMetadata(partnerId, cycle)
       .then((metadata) => {
@@ -93,7 +109,15 @@ export function ContributorPartnerMetadataPanel({
     event.preventDefault();
     setSaving(true);
     setError(null);
-    setNotice(null);
+    setToast(null);
+
+    const validationResult = validateRequiredMetadata(form);
+    if (validationResult) {
+      setMissingRequiredFields(validationResult.missingFields);
+      setToast({ message: validationResult.message, tone: "error" });
+      setSaving(false);
+      return;
+    }
 
     try {
       const savedMetadata = await saveContributorPartnerMetadata(
@@ -102,16 +126,67 @@ export function ContributorPartnerMetadataPanel({
         formToPayload(form),
       );
       setForm(metadataToForm(savedMetadata));
-      setNotice("Metadata saved.");
+      setMissingRequiredFields([]);
+      setToast({ message: "Metadata saved.", tone: "success" });
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Unable to save metadata.");
+      setToast({
+        message: error instanceof Error ? error.message : "Unable to save metadata.",
+        tone: "error",
+      });
     } finally {
       setSaving(false);
     }
   }
 
+  async function handleCopyFromPreviousMonth() {
+    const previousCycle = previousMonthValue(cycle);
+    setCopying(true);
+    setError(null);
+    setToast(null);
+
+    try {
+      const previousMetadata = await getContributorPartnerMetadata(partnerId, previousCycle);
+      if (!previousMetadata.metadata_id) {
+        setToast({
+          message: `No metadata saved for ${formatMonthLabel(previousCycle)}.`,
+          tone: "error",
+        });
+        return;
+      }
+
+      setForm(metadataToForm(previousMetadata));
+      setMissingRequiredFields([]);
+      setToast({
+        message: `Copied metadata from ${formatMonthLabel(previousCycle)}. Review and save to apply it here.`,
+        tone: "success",
+      });
+    } catch (error) {
+      setToast({
+        message:
+          error instanceof Error
+            ? error.message
+            : `Unable to copy metadata from ${formatMonthLabel(previousCycle)}.`,
+        tone: "error",
+      });
+    } finally {
+      setCopying(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!toast) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => setToast(null), 3200);
+    return () => window.clearTimeout(timeoutId);
+  }, [toast]);
+
   function updateField(field: keyof MetadataFormState, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
+    if (isRequiredMetadataField(field) && hasRequiredText(value)) {
+      setMissingRequiredFields((current) => current.filter((item) => item !== field));
+    }
   }
 
   function updateRisk(localId: string, updates: Partial<EditableRisk>) {
@@ -204,20 +279,48 @@ export function ContributorPartnerMetadataPanel({
   }
 
   if (loading) {
-    return <p className="muted-copy">Loading partner metadata</p>;
+    return (
+      <GlobalLoader
+        label="Loading partner metadata"
+        detail="Fetching saved partner context for this cycle."
+      />
+    );
   }
+
+  const isMissingRequiredField = (field: RequiredMetadataField) =>
+    missingRequiredFields.includes(field);
+  const previousCycle = previousMonthValue(cycle);
 
   return (
     <form className="metadata-form gold-metadata-form" onSubmit={handleSubmit}>
       {error ? <p className="workspace-error inline-error">{error}</p> : null}
-      {notice ? <p className="metadata-save-notice">{notice}</p> : null}
+      {toast ? (
+        <div
+          className={`metadata-save-toast ${toast.tone}`}
+          role="status"
+          aria-live="polite"
+        >
+          {toast.message}
+        </div>
+      ) : null}
+
+      <div className="metadata-action-toolbar">
+        <button
+          className="metadata-copy-action"
+          type="button"
+          onClick={handleCopyFromPreviousMonth}
+          disabled={copying || saving}
+        >
+          {copying ? "Copying" : `Copy from ${formatMonthLabel(previousCycle)}`}
+        </button>
+        <button className="metadata-save-action" type="submit" disabled={saving || copying}>
+          {saving ? "Saving" : "Save Metadata"}
+        </button>
+      </div>
 
       <section className="metadata-card">
         <div className="metadata-card-head">
           <span>Partner Metadata</span>
-          <button className="metadata-save-action" type="submit" disabled={saving}>
-            {saving ? "Saving" : "Save metadata"}
-          </button>
         </div>
         <div className="metadata-card-body metadata-status-body">
           <div className="metadata-field">
@@ -240,16 +343,28 @@ export function ContributorPartnerMetadataPanel({
         </div>
       </section>
 
-      <section className="metadata-card">
+      <section
+        className={
+          isMissingRequiredField("why_this_partner")
+            ? "metadata-card metadata-required-card invalid"
+            : "metadata-card metadata-required-card"
+        }
+      >
         <div className="metadata-card-head">
           <span>Why this partner</span>
+          <span className="metadata-required-badge">Required</span>
         </div>
         <div className="metadata-card-body">
-          <textarea
-            className="metadata-textarea metadata-textarea-large"
+          <AutoGrowTextarea
+            className={
+              isMissingRequiredField("why_this_partner")
+                ? "metadata-textarea metadata-textarea-large invalid"
+                : "metadata-textarea metadata-textarea-large"
+            }
             value={form.why_this_partner}
             onChange={(event) => updateField("why_this_partner", event.target.value)}
             maxLength={2000}
+            aria-invalid={isMissingRequiredField("why_this_partner")}
           />
         </div>
       </section>
@@ -257,6 +372,8 @@ export function ContributorPartnerMetadataPanel({
       <div className="metadata-grid">
         <MetadataListCard
           label="Business priority"
+          required
+          invalid={isMissingRequiredField("business_priority")}
           rows={listFieldRows(form.business_priority)}
           onAdd={() => addListFieldRow("business_priority")}
           onRemove={(index) => removeListFieldRow("business_priority", index)}
@@ -264,6 +381,8 @@ export function ContributorPartnerMetadataPanel({
         />
         <MetadataListCard
           label="Highlights / status"
+          required
+          invalid={isMissingRequiredField("highlights_status")}
           rows={listFieldRows(form.highlights_status)}
           onAdd={() => addListFieldRow("highlights_status")}
           onRemove={(index) => removeListFieldRow("highlights_status", index)}
@@ -271,6 +390,8 @@ export function ContributorPartnerMetadataPanel({
         />
         <MetadataListCard
           label="Goals"
+          required
+          invalid={isMissingRequiredField("goals")}
           rows={listFieldRows(form.goals)}
           onAdd={() => addListFieldRow("goals")}
           onRemove={(index) => removeListFieldRow("goals", index)}
@@ -288,23 +409,18 @@ export function ContributorPartnerMetadataPanel({
         <div className="metadata-card-body metadata-table-body">
           {form.execution_timeline.map((row) => (
             <div className="metadata-table-row metadata-timeline-row" key={row.local_id}>
-              <textarea
-                className="metadata-textarea"
+              <AutoGrowTextarea
                 value={row.milestone}
                 onChange={(event) => updateTimeline(row.local_id, { milestone: event.target.value })}
                 maxLength={300}
                 placeholder="Milestone"
                 rows={1}
               />
-              <span className={`metadata-date-wrap${row.target_date ? " has-value" : ""}`} data-placeholder="Target Date">
-                <input
-                  className="metadata-input"
-                  type="date"
-                  value={row.target_date}
-                  onChange={(event) => updateTimeline(row.local_id, { target_date: event.target.value })}
-                  aria-label="Target Date"
-                />
-              </span>
+              <MetadataMonthPicker
+                value={row.target_date}
+                placeholder="Target Date"
+                onChange={(value) => updateTimeline(row.local_id, { target_date: value })}
+              />
               <button
                 className="metadata-row-remove"
                 type="button"
@@ -329,15 +445,13 @@ export function ContributorPartnerMetadataPanel({
           {form.risks.map((risk, index) => (
             <div className="metadata-table-row metadata-risk-row" key={risk.local_id}>
               <input className="metadata-input" value={index + 1} aria-label="Risk number" readOnly />
-              <textarea
-                className="metadata-textarea"
+              <AutoGrowTextarea
                 value={risk.description}
                 onChange={(event) => updateRisk(risk.local_id, { description: event.target.value })}
                 placeholder="Description"
                 rows={1}
               />
-              <textarea
-                className="metadata-textarea"
+              <AutoGrowTextarea
                 value={risk.green_action ?? ""}
                 onChange={(event) => updateRisk(risk.local_id, { green_action: event.target.value })}
                 placeholder="Go to green action"
@@ -359,19 +473,14 @@ export function ContributorPartnerMetadataPanel({
                 onChange={(event) => updateRisk(risk.local_id, { assigned_to: event.target.value })}
                 placeholder="Assigned"
               />
-              <span className={`metadata-date-wrap${risk.due_date ? " has-value" : ""}`} data-placeholder="Due Date">
-                <input
-                  className="metadata-input"
-                  type="date"
-                  value={risk.due_date ?? ""}
-                  onChange={(event) =>
-                    updateRisk(risk.local_id, { due_date: valueOrNull(event.target.value) })
-                  }
-                  aria-label="Due Date"
-                />
-              </span>
-              <textarea
-                className="metadata-textarea"
+              <MetadataMonthPicker
+                value={dateToMonthValue(risk.due_date)}
+                placeholder="Due Date"
+                onChange={(value) =>
+                  updateRisk(risk.local_id, { due_date: monthToDateValue(value) })
+                }
+              />
+              <AutoGrowTextarea
                 value={risk.ramification ?? ""}
                 onChange={(event) => updateRisk(risk.local_id, { ramification: event.target.value })}
                 placeholder="Ramification"
@@ -398,7 +507,7 @@ export function ContributorPartnerMetadataPanel({
           </button>
         </div>
         <div className="metadata-card-body metadata-table-body">
-          {form.resources.map((resource, index) => (
+          {form.resources.map((resource) => (
             <div className="metadata-table-row metadata-resource-row" key={resource.local_id}>
               <select className="metadata-select" defaultValue="other" disabled={resource.disabled}>
                 <option value="jira">Jira</option>
@@ -408,24 +517,21 @@ export function ContributorPartnerMetadataPanel({
                 <option value="sharepoint">SharePoint</option>
                 <option value="other">Other</option>
               </select>
-              <textarea
-                className="metadata-textarea"
+              <AutoGrowTextarea
                 value={resource.title}
                 onChange={(event) => updateResource(resource.local_id, { title: event.target.value })}
                 placeholder="Title"
                 rows={1}
                 disabled={resource.disabled}
               />
-              <textarea
-                className="metadata-textarea"
+              <AutoGrowTextarea
                 value={resource.url}
                 onChange={(event) => updateResource(resource.local_id, { url: event.target.value })}
                 placeholder="https://..."
                 rows={1}
                 disabled={resource.disabled}
               />
-              <textarea
-                className="metadata-textarea"
+              <AutoGrowTextarea
                 value={resource.description ?? ""}
                 onChange={(event) =>
                   updateResource(resource.local_id, { description: event.target.value })
@@ -434,10 +540,6 @@ export function ContributorPartnerMetadataPanel({
                 rows={1}
                 disabled={resource.disabled}
               />
-              <label className="metadata-featured">
-                <input type="checkbox" defaultChecked={index === 0} disabled={resource.disabled} />
-                Featured
-              </label>
               <button
                 className="metadata-row-remove"
                 type="button"
@@ -456,35 +558,51 @@ export function ContributorPartnerMetadataPanel({
 }
 
 function MetadataListCard({
+  invalid = false,
   label,
   onAdd,
   onRemove,
   onUpdate,
+  required = false,
   rows,
 }: {
+  invalid?: boolean;
   label: string;
   onAdd: () => void;
   onRemove: (index: number) => void;
   onUpdate: (index: number, value: string) => void;
+  required?: boolean;
   rows: string[];
 }) {
   return (
-    <section className="metadata-card">
+    <section
+      className={
+        invalid
+          ? "metadata-card metadata-required-card invalid"
+          : required
+            ? "metadata-card metadata-required-card"
+            : "metadata-card"
+      }
+    >
       <div className="metadata-card-head">
         <span>{label}</span>
-        <button className="metadata-add-action" type="button" onClick={onAdd}>
-          + Add
-        </button>
+        <div className="metadata-card-head-actions">
+          {required ? <span className="metadata-required-badge">Required</span> : null}
+          <button className="metadata-add-action" type="button" onClick={onAdd}>
+            + Add
+          </button>
+        </div>
       </div>
       <div className="metadata-card-body metadata-list">
         {rows.map((row, index) => (
           <div className="metadata-list-row" key={`${label}-${index}`}>
-            <textarea
-              className="metadata-textarea"
+            <AutoGrowTextarea
+              className={invalid && !hasRequiredText(row) ? "metadata-textarea invalid" : undefined}
               value={row}
               onChange={(event) => onUpdate(index, event.target.value)}
               rows={1}
               maxLength={500}
+              aria-invalid={invalid && !hasRequiredText(row)}
             />
             <button
               className="metadata-row-remove"
@@ -498,6 +616,215 @@ function MetadataListCard({
         ))}
       </div>
     </section>
+  );
+}
+
+function AutoGrowTextarea({
+  className = "",
+  onChange,
+  rows = 1,
+  value,
+  ...props
+}: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const resolvedClassName = className.includes("metadata-textarea")
+    ? className
+    : `metadata-textarea${className ? ` ${className}` : ""}`;
+
+  useEffect(() => {
+    resizeTextarea(textareaRef.current);
+  }, [value]);
+
+  return (
+    <textarea
+      {...props}
+      ref={textareaRef}
+      className={resolvedClassName}
+      onChange={(event) => {
+        resizeTextarea(event.currentTarget);
+        onChange?.(event);
+      }}
+      rows={rows}
+      value={value}
+    />
+  );
+}
+
+function resizeTextarea(textarea: HTMLTextAreaElement | null) {
+  if (!textarea) {
+    return;
+  }
+  textarea.style.height = "auto";
+  textarea.style.height = `${textarea.scrollHeight}px`;
+}
+
+function MetadataMonthPicker({
+  onChange,
+  placeholder,
+  value,
+}: {
+  onChange: (value: string) => void;
+  placeholder: string;
+  value: string;
+}) {
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+  const parsedValue = parseMonthValue(value);
+  const currentYear = new Date().getFullYear();
+  const [open, setOpen] = useState(false);
+  const [view, setView] = useState<"months" | "years">("months");
+  const [selectedYear, setSelectedYear] = useState(parsedValue?.year ?? currentYear);
+
+  useEffect(() => {
+    if (parsedValue) {
+      setSelectedYear(parsedValue.year);
+    }
+  }, [parsedValue?.year]);
+
+  useEffect(() => {
+    function handleDocumentClick(event: MouseEvent) {
+      if (!pickerRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleDocumentClick);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handleDocumentClick);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, []);
+
+  function handleToggle() {
+    setOpen((current) => !current);
+    setView("months");
+  }
+
+  function handleMonthSelect(month: number) {
+    onChange(formatMonthValue({ year: selectedYear, month }));
+    setOpen(false);
+    setView("months");
+  }
+
+  function handleYearSelect(year: number) {
+    setSelectedYear(year);
+    setView("months");
+  }
+
+  function handleClear() {
+    onChange("");
+    setOpen(false);
+    setView("months");
+  }
+
+  const yearOptions = Array.from({ length: 21 }, (_, index) => selectedYear - 10 + index);
+  const label = parsedValue ? formatMonthLabel(value) : placeholder;
+
+  return (
+    <div
+      className={`cycle-picker metadata-month-picker${open ? " open" : ""}${
+        parsedValue ? "" : " empty"
+      }`}
+      ref={pickerRef}
+    >
+      <div className="cycle-picker-control">
+        <button
+          className="cycle-picker-label"
+          type="button"
+          onClick={handleToggle}
+          aria-expanded={open}
+          aria-label={`Open ${placeholder} picker`}
+        >
+          <span>{label}</span>
+          <span className="metadata-calendar-icon" aria-hidden="true" />
+        </button>
+      </div>
+
+      <div className="cycle-picker-menu" role="dialog" aria-label={`${placeholder} picker`}>
+        <button className="cycle-picker-year" type="button" onClick={() => setView("years")}>
+          {selectedYear}
+        </button>
+
+        <div className={`cycle-picker-view${view === "months" ? " active" : ""}`}>
+          <div className="cycle-month-grid">
+            {monthLabels.map((monthLabel, index) => {
+              const month = index + 1;
+              const isActive = parsedValue?.year === selectedYear && parsedValue.month === month;
+              return (
+                <button
+                  key={monthLabel}
+                  className={`cycle-month${isActive ? " active" : ""}`}
+                  type="button"
+                  onClick={() => handleMonthSelect(month)}
+                >
+                  {monthLabel}
+                </button>
+              );
+            })}
+          </div>
+          {value ? (
+            <button className="metadata-month-clear" type="button" onClick={handleClear}>
+              Clear
+            </button>
+          ) : null}
+        </div>
+
+        <div className={`cycle-picker-view${view === "years" ? " active" : ""}`}>
+          <div className="cycle-year-grid">
+            {yearOptions.map((year) => (
+              <button
+                key={year}
+                className={`cycle-year-option${year === selectedYear ? " active" : ""}`}
+                type="button"
+                onClick={() => handleYearSelect(year)}
+              >
+                {year}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function validateRequiredMetadata(
+  form: MetadataFormState,
+): { message: string; missingFields: RequiredMetadataField[] } | null {
+  const missingFields = [
+    { field: "why_this_partner", label: "Why this partner", value: form.why_this_partner },
+    { field: "business_priority", label: "Business priority", value: form.business_priority },
+    { field: "highlights_status", label: "Highlights / status", value: form.highlights_status },
+    { field: "goals", label: "Goals", value: form.goals },
+  ]
+    .filter((item) => !hasRequiredText(item.value));
+
+  if (!missingFields.length) {
+    return null;
+  }
+
+  const labels = missingFields.map((item) => item.label);
+  return {
+    message: `${labels.join(", ")} ${labels.length === 1 ? "is" : "are"} required.`,
+    missingFields: missingFields.map((item) => item.field as RequiredMetadataField),
+  };
+}
+
+function hasRequiredText(value: string): boolean {
+  return value
+    .split("\n")
+    .some((row) => row.trim().length > 0);
+}
+
+function isRequiredMetadataField(field: keyof MetadataFormState): field is RequiredMetadataField {
+  return ["why_this_partner", "business_priority", "highlights_status", "goals"].includes(
+    field,
   );
 }
 
@@ -619,6 +946,65 @@ function valueOrNull(value: string | null): string | null {
   return cleaned || null;
 }
 
+function dateToMonthValue(value: string | null | undefined): string {
+  if (!value) {
+    return "";
+  }
+  return value.slice(0, 7);
+}
+
+function monthToDateValue(value: string | null): string | null {
+  const month = valueOrNull(value);
+  return month ? `${month}-01` : null;
+}
+
+function parseMonthValue(value: string | null | undefined): { year: number; month: number } | null {
+  if (!value) {
+    return null;
+  }
+  const match = /^(\d{4})-(\d{2})/.exec(value);
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return null;
+  }
+
+  return { year, month };
+}
+
+function formatMonthValue(value: { year: number; month: number }): string {
+  return `${value.year}-${String(value.month).padStart(2, "0")}`;
+}
+
+function formatMonthLabel(value: string): string {
+  const parsed = parseMonthValue(value);
+  if (!parsed) {
+    return value;
+  }
+
+  const month = new Intl.DateTimeFormat("en", { month: "long" }).format(
+    new Date(parsed.year, parsed.month - 1, 1),
+  );
+  return `${month} ${parsed.year}`;
+}
+
+function previousMonthValue(value: string): string {
+  const parsed = parseMonthValue(value);
+  const current = parsed ?? {
+    year: new Date().getFullYear(),
+    month: new Date().getMonth() + 1,
+  };
+  const previous = new Date(current.year, current.month - 2, 1);
+  return formatMonthValue({
+    year: previous.getFullYear(),
+    month: previous.getMonth() + 1,
+  });
+}
+
 function listFieldRows(value: string): string[] {
   const rows = value.split("\n");
   return rows.length ? rows : [""];
@@ -634,7 +1020,7 @@ function timelineRowsFromText(value: string | null): EditableTimelineRow[] {
     return {
       local_id: createLocalId(),
       milestone,
-      target_date: targetDate.trim(),
+      target_date: dateToMonthValue(targetDate.trim()),
     };
   });
 }

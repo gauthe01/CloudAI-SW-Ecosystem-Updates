@@ -1,47 +1,73 @@
 "use client";
 
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  type CSSProperties,
+  type FormEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactElement,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
+import { GlobalLoader } from "@/components/foundation/GlobalLoader";
 import {
   DraftEmail,
-  PresenterAnalysis,
+  PresenterDecisionBoard,
+  PresenterDecisionBoardSignal,
+  PresenterExecutiveSummary,
   PresenterMetadata,
   PresenterPartner,
+  PresenterPeriodQuery,
   PresenterUpdate,
+  askPresenterAi,
   draftPresenterEmail,
-  getPresenterAnalysis,
+  generatePresenterDecisionBoard,
+  generatePresenterExecutiveSummary,
   getPresenterMetadata,
   listPresenterUpdates,
 } from "@/features/presenter/presenter-api";
 
 type PresenterWorkspacePanelProps = {
-  cycle: string;
-  onCycleChange: (cycle: string) => void;
+  askAiOpen: boolean;
+  emailRequestKey: number;
+  onAskAiClose: () => void;
   onPartnerSelectionChange: (partnerIds: string[]) => void;
-  onSectionChange: (section: string) => void;
+  onPeriodChange: (period: PresenterPeriodQuery) => void;
   partners: PresenterPartner[];
+  period: PresenterPeriodQuery;
   section: string;
   selectedPartnerIds: string[];
 };
 
 export function PresenterWorkspacePanel({
-  cycle,
-  onCycleChange,
+  askAiOpen,
+  emailRequestKey,
+  onAskAiClose,
   onPartnerSelectionChange,
-  onSectionChange,
+  onPeriodChange,
   partners,
+  period,
   section,
   selectedPartnerIds,
 }: PresenterWorkspacePanelProps) {
   const [search, setSearch] = useState("");
   const [updates, setUpdates] = useState<PresenterUpdate[]>([]);
   const [metadata, setMetadata] = useState<PresenterMetadata | null>(null);
-  const [analysis, setAnalysis] = useState<PresenterAnalysis | null>(null);
+  const [executiveSummary, setExecutiveSummary] = useState<PresenterExecutiveSummary | null>(null);
+  const [decisionBoard, setDecisionBoard] = useState<PresenterDecisionBoard | null>(null);
   const [draftEmail, setDraftEmail] = useState<DraftEmail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [decisionBoardLoading, setDecisionBoardLoading] = useState(false);
   const [busyEmail, setBusyEmail] = useState(false);
+  const [emailModalOpen, setEmailModalOpen] = useState(false);
+  const [emailCopyNotice, setEmailCopyNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [askAiOpen, setAskAiOpen] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [decisionBoardError, setDecisionBoardError] = useState<string | null>(null);
+  const cycle = period.cycle;
 
   useEffect(() => {
     let mounted = true;
@@ -50,14 +76,18 @@ export function PresenterWorkspacePanel({
     const singlePartnerId = selectedPartnerIds.length === 1 ? selectedPartnerIds[0] : null;
 
     Promise.all([
-      listPresenterUpdates({ cycle, partnerIds: selectedPartnerIds, search }),
-      getPresenterAnalysis({ cycle, partnerIds: selectedPartnerIds }),
+      listPresenterUpdates({
+        cycle,
+        dateStart: period.dateStart,
+        dateEnd: period.dateEnd,
+        partnerIds: selectedPartnerIds,
+        search,
+      }),
       singlePartnerId ? getPresenterMetadata(singlePartnerId, cycle) : Promise.resolve(null),
     ])
-      .then(([nextUpdates, nextAnalysis, nextMetadata]) => {
+      .then(([nextUpdates, nextMetadata]) => {
         if (mounted) {
           setUpdates(nextUpdates);
-          setAnalysis(nextAnalysis);
           setMetadata(nextMetadata);
         }
       })
@@ -75,13 +105,101 @@ export function PresenterWorkspacePanel({
     return () => {
       mounted = false;
     };
-  }, [cycle, search, selectedPartnerIds]);
+  }, [cycle, period.dateEnd, period.dateStart, search, selectedPartnerIds]);
+
+  useEffect(() => {
+    let mounted = true;
+    if (section !== "Executive Summary") {
+      return () => {
+        mounted = false;
+      };
+    }
+    setSummaryLoading(true);
+    setSummaryError(null);
+    generatePresenterExecutiveSummary({
+      cycle,
+      dateStart: period.dateStart,
+      dateEnd: period.dateEnd,
+      partnerIds: selectedPartnerIds,
+    })
+      .then((nextSummary) => {
+        if (mounted) {
+          setExecutiveSummary(nextSummary);
+        }
+      })
+      .catch((error) => {
+        if (mounted) {
+          setSummaryError(error instanceof Error ? error.message : "Unable to generate executive summary.");
+          setExecutiveSummary(null);
+        }
+      })
+      .finally(() => {
+        if (mounted) {
+          setSummaryLoading(false);
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [cycle, period.dateEnd, period.dateStart, section, selectedPartnerIds]);
+
+  useEffect(() => {
+    let mounted = true;
+    if (section !== "Decision Board") {
+      return () => {
+        mounted = false;
+      };
+    }
+    setDecisionBoardLoading(true);
+    setDecisionBoardError(null);
+    generatePresenterDecisionBoard({
+      cycle,
+      dateStart: period.dateStart,
+      dateEnd: period.dateEnd,
+      partnerIds: selectedPartnerIds,
+    })
+      .then((nextBoard) => {
+        if (mounted) {
+          setDecisionBoard(nextBoard);
+        }
+      })
+      .catch((error) => {
+        if (mounted) {
+          setDecisionBoardError(error instanceof Error ? error.message : "Unable to generate decision board.");
+          setDecisionBoard(null);
+        }
+      })
+      .finally(() => {
+        if (mounted) {
+          setDecisionBoardLoading(false);
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [cycle, period.dateEnd, period.dateStart, section, selectedPartnerIds]);
+
+  useEffect(() => {
+    if (emailRequestKey <= 0) {
+      return;
+    }
+    void handleDraftEmail();
+  }, [emailRequestKey]);
 
   async function handleDraftEmail() {
     setBusyEmail(true);
+    setEmailModalOpen(true);
+    setEmailCopyNotice(null);
     setError(null);
     try {
-      setDraftEmail(await draftPresenterEmail({ cycle, partnerIds: selectedPartnerIds }));
+      setDraftEmail(
+        await draftPresenterEmail({
+          cycle,
+          dateStart: period.dateStart,
+          dateEnd: period.dateEnd,
+          partnerIds: selectedPartnerIds,
+        }),
+      );
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to draft email.");
     } finally {
@@ -101,8 +219,6 @@ export function PresenterWorkspacePanel({
     : selectedPartnerIds.length
       ? `${selectedPartnerIds.length} partners selected`
       : "All Partners";
-  const scopedPartnerCount = selectedPartnerIds.length || partners.length;
-  const visibleUpdateCount = analysis?.update_count ?? updates.length;
 
   return (
     <div className={askAiOpen ? "presenter-workspace ask-ai-open" : "presenter-workspace"}>
@@ -110,11 +226,6 @@ export function PresenterWorkspacePanel({
         <div className="presenter-intel-header-left">
           <div className="presenter-intel-copy">
             <h1>{scopeLabel}</h1>
-            <p>
-              {visibleUpdateCount} update{visibleUpdateCount === 1 ? "" : "s"} ·{" "}
-              {formatCycleLabel(cycle)} · {scopedPartnerCount} of {partners.length} partner
-              {partners.length === 1 ? "" : "s"}
-            </p>
           </div>
           <div className="presenter-search-wrap">
             <input
@@ -128,53 +239,15 @@ export function PresenterWorkspacePanel({
         </div>
         <div className="presenter-intel-actions">
           <div className="presenter-cycle-control" aria-label="Reporting period">
-            <button
-              type="button"
-              className="presenter-cycle-nav"
-              aria-label="Previous reporting period"
-              onClick={() => {
-                onCycleChange(shiftCycle(cycle, -1));
+            <PresenterPeriodPicker
+              period={period}
+              onChange={(nextPeriod) => {
                 setDraftEmail(null);
+                setEmailCopyNotice(null);
+                onPeriodChange(nextPeriod);
               }}
-            >
-              ‹
-            </button>
-            <input
-              type="month"
-              value={cycle}
-              onChange={(event) => {
-                onCycleChange(event.target.value);
-                setDraftEmail(null);
-              }}
-              aria-label="Cycle"
             />
-            <button
-              type="button"
-              className="presenter-cycle-nav"
-              aria-label="Next reporting period"
-              onClick={() => {
-                onCycleChange(shiftCycle(cycle, 1));
-                setDraftEmail(null);
-              }}
-            >
-              ›
-            </button>
           </div>
-          <button
-            type="button"
-            className={askAiOpen ? "presenter-intel-btn primary active" : "presenter-intel-btn primary"}
-            onClick={() => setAskAiOpen((current) => !current)}
-          >
-            <span className="presenter-ai-spark" aria-hidden="true" />
-            <span>Ask AI</span>
-          </button>
-          <button
-            type="button"
-            className={section === "Decision Board" ? "presenter-intel-btn active" : "presenter-intel-btn"}
-            onClick={() => onSectionChange("Decision Board")}
-          >
-            Deep Analysis
-          </button>
         </div>
       </section>
 
@@ -183,119 +256,534 @@ export function PresenterWorkspacePanel({
       <div className={askAiOpen ? "presenter-intel-layout with-ai" : "presenter-intel-layout"}>
         <div className="presenter-intel-main">
           {section === "Executive Summary" ? (
-            <ExecutiveSummaryPanel analysis={analysis} loading={loading} />
+            <ExecutiveSummaryPanel
+              error={summaryError}
+              loading={summaryLoading}
+              search={search}
+              summary={executiveSummary}
+            />
           ) : null}
 
           {section === "Decision Board" ? (
-            <DecisionBoardPanel analysis={analysis} loading={loading} />
+            <DecisionBoardPanel
+              board={decisionBoard}
+              error={decisionBoardError}
+              loading={decisionBoardLoading}
+              search={search}
+            />
           ) : null}
 
-          {section === "Partner Intelligence" ? (
+          {section === "Partner Updates" ? (
             <PartnerIntelligencePanel
               cycle={cycle}
               loading={loading}
               metadata={metadata}
               partners={partners}
-              selectedPartnerCount={selectedPartnerIds.length}
               selectedPartner={selectedPartner}
               updates={updates}
             />
           ) : null}
 
-          {section === "Draft Email" ? (
-            <DraftEmailPanel
-              draftEmail={draftEmail}
-              loading={loading}
-              onDraftEmail={handleDraftEmail}
-              busyEmail={busyEmail}
-              updates={updates}
-            />
+          {section === "Event Calendar" ? (
+            <EventCalendarPanel loading={loading} />
           ) : null}
         </div>
 
         {askAiOpen ? (
           <AskAiPanel
-            analysis={analysis}
             partners={partners}
+            period={period}
             selectedPartnerIds={selectedPartnerIds}
             selectedPartner={selectedPartner}
-            updates={updates}
-            onClose={() => setAskAiOpen(false)}
+            onClose={onAskAiClose}
             onPartnerSelectionChange={onPartnerSelectionChange}
           />
         ) : null}
+      </div>
+      <PresenterEmailModal
+        busy={busyEmail}
+        copyNotice={emailCopyNotice}
+        draftEmail={draftEmail}
+        open={emailModalOpen}
+        onClose={() => {
+          setEmailModalOpen(false);
+          setEmailCopyNotice(null);
+        }}
+        onCopyNotice={setEmailCopyNotice}
+        onRefresh={handleDraftEmail}
+      />
+    </div>
+  );
+}
+
+function PresenterPeriodPicker({
+  period,
+  onChange,
+}: {
+  period: PresenterPeriodQuery;
+  onChange: (period: PresenterPeriodQuery) => void;
+}) {
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+  const rangeStartRef = useRef<HTMLInputElement | null>(null);
+  const rangeEndRef = useRef<HTMLInputElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<"month" | "range">(
+    period.dateStart && period.dateEnd ? "range" : "month",
+  );
+  const [viewYear, setViewYear] = useState(parseCycle(period.cycle)?.year ?? new Date().getFullYear());
+  const [rangeStart, setRangeStart] = useState(
+    period.dateStart ?? `${period.cycle}-01`,
+  );
+  const [rangeEnd, setRangeEnd] = useState(period.dateEnd ?? lastDayOfCycle(period.cycle));
+  const currentMonth = currentCycle();
+
+  useEffect(() => {
+    setMode(period.dateStart && period.dateEnd ? "range" : "month");
+    setRangeStart(period.dateStart ?? `${period.cycle}-01`);
+    setRangeEnd(period.dateEnd ?? lastDayOfCycle(period.cycle));
+    setViewYear(parseCycle(period.cycle)?.year ?? new Date().getFullYear());
+  }, [period.cycle, period.dateEnd, period.dateStart]);
+
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      if (!pickerRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, []);
+
+  function handleShift(months: number) {
+    if (period.dateStart && period.dateEnd) {
+      const nextStart = shiftIsoDateByMonths(period.dateStart, months);
+      const nextEnd = shiftIsoDateByMonths(period.dateEnd, months);
+      if (nextStart && nextEnd && nextEnd.slice(0, 7) <= currentMonth) {
+        onChange({ cycle: nextEnd.slice(0, 7), dateStart: nextStart, dateEnd: nextEnd });
+      }
+      return;
+    }
+    const nextCycle = shiftCycle(period.cycle, months);
+    if (nextCycle <= currentMonth) {
+      onChange({ cycle: nextCycle, dateStart: null, dateEnd: null });
+    }
+  }
+
+  function selectMonth(month: number) {
+    const nextCycle = `${viewYear}-${String(month).padStart(2, "0")}`;
+    if (nextCycle > currentMonth) {
+      return;
+    }
+    onChange({ cycle: nextCycle, dateStart: null, dateEnd: null });
+    setOpen(false);
+  }
+
+  function applyRange() {
+    const nextRangeStart = rangeStartRef.current?.value || rangeStart;
+    const nextRangeEnd = rangeEndRef.current?.value || rangeEnd;
+    if (
+      !nextRangeStart ||
+      !nextRangeEnd ||
+      nextRangeStart > nextRangeEnd ||
+      nextRangeEnd.slice(0, 7) > currentMonth
+    ) {
+      return;
+    }
+    onChange({
+      cycle: nextRangeEnd.slice(0, 7),
+      dateStart: nextRangeStart,
+      dateEnd: nextRangeEnd,
+    });
+    setOpen(false);
+  }
+
+  const rangeInvalid =
+    !rangeStart || !rangeEnd || rangeStart > rangeEnd || rangeEnd.slice(0, 7) > currentMonth;
+
+  return (
+    <div className={`presenter-period-picker${open ? " open" : ""}`} ref={pickerRef}>
+      <button
+        type="button"
+        className="presenter-period-nav"
+        aria-label="Previous reporting period"
+        onClick={() => handleShift(-1)}
+      >
+        ‹
+      </button>
+      <button
+        type="button"
+        className="presenter-period-summary"
+        aria-expanded={open}
+        aria-label="Open reporting period picker"
+        onClick={() => setOpen((current) => !current)}
+      >
+        {formatPeriodLabel(period)}
+      </button>
+      <button
+        type="button"
+        className="presenter-period-nav"
+        aria-label="Next reporting period"
+        onClick={() => handleShift(1)}
+        disabled={
+          period.dateStart && period.dateEnd
+            ? period.dateEnd.slice(0, 7) >= currentMonth
+            : period.cycle >= currentMonth
+        }
+      >
+        ›
+      </button>
+      <div className="presenter-period-menu" role="dialog" aria-label="Reporting period picker">
+        <div className="presenter-period-menu-head">
+          <button
+            type="button"
+            className="presenter-period-year"
+            onClick={() => setViewYear((year) => Math.max(2020, year - 1))}
+          >
+            {viewYear}
+          </button>
+          <div className="presenter-period-tabs" role="tablist" aria-label="Reporting period type">
+            <button
+              type="button"
+              className={mode === "month" ? "active" : ""}
+              onClick={() => setMode("month")}
+            >
+              Month
+            </button>
+            <button
+              type="button"
+              className={mode === "range" ? "active" : ""}
+              onClick={() => setMode("range")}
+            >
+              Range
+            </button>
+          </div>
+          <button
+            type="button"
+            className="presenter-period-year-next"
+            onClick={() => setViewYear((year) => Math.min(new Date().getFullYear(), year + 1))}
+            disabled={viewYear >= new Date().getFullYear()}
+            aria-label="Next year"
+          >
+            ›
+          </button>
+        </div>
+        {mode === "month" ? (
+          <>
+            <div className="presenter-period-month-grid">
+              {MONTH_LABELS.map((label, index) => {
+                const month = index + 1;
+                const cycleValue = `${viewYear}-${String(month).padStart(2, "0")}`;
+                const disabled = cycleValue > currentMonth;
+                return (
+                  <button
+                    type="button"
+                    key={label}
+                    className={cycleValue === period.cycle && !period.dateStart ? "active" : ""}
+                    disabled={disabled}
+                    onClick={() => selectMonth(month)}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="presenter-period-note">Future months are not selectable</div>
+          </>
+        ) : (
+          <div className="presenter-period-range-view">
+            <div className="presenter-period-range-fields">
+              <label>
+                <span>Start date</span>
+                <input
+                  ref={rangeStartRef}
+                  type="date"
+                  value={rangeStart}
+                  max={rangeEnd || undefined}
+                  onChange={(event) => setRangeStart(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>End date</span>
+                <input
+                  ref={rangeEndRef}
+                  type="date"
+                  value={rangeEnd}
+                  min={rangeStart || undefined}
+                  max={lastDayOfCycle(currentMonth)}
+                  onChange={(event) => setRangeEnd(event.target.value)}
+                />
+              </label>
+            </div>
+            <div className="presenter-period-range-selected">
+              {rangeInvalid ? "Select a valid past or current reporting range." : `${rangeStart} to ${rangeEnd}`}
+            </div>
+            <button
+              type="button"
+              className="presenter-period-apply"
+              disabled={rangeInvalid}
+              onClick={applyRange}
+            >
+              Apply range
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function ExecutiveSummaryPanel({
-  analysis,
-  loading,
+function PresenterEmailModal({
+  busy,
+  copyNotice,
+  draftEmail,
+  open,
+  onClose,
+  onCopyNotice,
+  onRefresh,
 }: {
-  analysis: PresenterAnalysis | null;
+  busy: boolean;
+  copyNotice: string | null;
+  draftEmail: DraftEmail | null;
+  open: boolean;
+  onClose: () => void;
+  onCopyNotice: (notice: string | null) => void;
+  onRefresh: () => void;
+}) {
+  if (!open) {
+    return null;
+  }
+
+  async function copyEmail() {
+    if (!draftEmail) {
+      return;
+    }
+    const text = `Subject: ${draftEmail.subject}\n\n${draftEmail.body}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      onCopyNotice("Copied formatted email to clipboard.");
+    } catch {
+      onCopyNotice("Unable to copy email.");
+    }
+  }
+
+  return (
+    <div className="presenter-email-modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="presenter-email-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="presenter-email-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="presenter-email-modal-head">
+          <h2 id="presenter-email-title">Generate email for this period</h2>
+          <button type="button" aria-label="Close email modal" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <div className="presenter-email-modal-body">
+          {busy ? (
+            <GlobalLoader
+              label="Drafting email"
+              detail="Composing from approved updates in the selected period."
+              size="compact"
+              tone="ai"
+            />
+          ) : null}
+          {!busy && draftEmail ? (
+            <>
+              <div className="presenter-email-subject-row">
+                <span>Subject: {draftEmail.subject}</span>
+                <button type="button" aria-label="Copy formatted email" onClick={copyEmail}>
+                  Copy
+                </button>
+              </div>
+              <pre className="presenter-email-preview">{draftEmail.body}</pre>
+              {copyNotice ? <p className="presenter-email-copy-notice">{copyNotice}</p> : null}
+            </>
+          ) : null}
+          {!busy && !draftEmail ? (
+            <div className="presenter-email-empty">
+              Generate the email preview to review the presenter-ready draft.
+            </div>
+          ) : null}
+        </div>
+        <div className="presenter-email-modal-actions">
+          <button className="modal-btn secondary disabled" type="button" disabled>
+            Connect Outlook
+          </button>
+          <button className="modal-btn secondary" type="button" onClick={onRefresh} disabled={busy}>
+            Regenerate
+          </button>
+          <button className="modal-btn primary" type="button" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ExecutiveSummaryPanel({
+  error,
+  loading,
+  search,
+  summary,
+}: {
+  error: string | null;
   loading: boolean;
+  search: string;
+  summary: PresenterExecutiveSummary | null;
 }) {
   if (loading) {
-    return <p className="muted-copy">Loading executive summary</p>;
+    return (
+      <GlobalLoader
+        label="Generating executive summary"
+        detail="Reading approved updates for this selected scope."
+        tone="ai"
+      />
+    );
   }
+  const searchTerm = search.trim();
+  const visibleBullets = filterSummaryBullets(summary?.bullets ?? [], searchTerm);
   return (
-    <section className="presenter-panel">
-      <div className="presenter-summary-grid">
-        <MetricCard label="Approved Updates" value={analysis?.update_count ?? 0} />
-        <MetricCard label="Partners" value={analysis?.partner_count ?? 0} />
-        <MetricCard label="Source Types" value={Object.keys(analysis?.source_mix ?? {}).length} />
+    <section className="presenter-panel executive-summary-panel">
+      <div className="executive-summary-card">
+        <div className="executive-summary-head">
+          <span className="executive-summary-mark" aria-hidden="true" />
+          <div>
+            <h2>Executive Summary</h2>
+            <p>Generated from approved updates in the selected scope.</p>
+          </div>
+        </div>
+        {error ? <p className="workspace-error inline-error">{error}</p> : null}
+        {!error && !summary?.bullets.length ? (
+          <p className="executive-summary-empty">
+            {summary?.source_note ?? "No approved updates found for this selection."}
+          </p>
+        ) : null}
+        {!error && summary?.bullets.length && !visibleBullets.length ? (
+          <p className="executive-summary-empty">No executive summary lines match the search term.</p>
+        ) : null}
+        {visibleBullets.length ? (
+          <ul className="executive-summary-list">
+            {visibleBullets.map((item) => (
+              <li key={item}>{renderHighlightedText(item, searchTerm)}</li>
+            ))}
+          </ul>
+        ) : null}
+        {summary?.source_note && summary.bullets.length ? (
+          <p className="executive-summary-note">{summary.source_note}</p>
+        ) : null}
       </div>
-      <div className="presenter-narrative">
-        <p>{analysis?.executive_summary}</p>
-      </div>
-      <SourceMix sourceMix={analysis?.source_mix ?? {}} />
     </section>
   );
 }
 
 function DecisionBoardPanel({
-  analysis,
+  board,
+  error,
   loading,
+  search,
 }: {
-  analysis: PresenterAnalysis | null;
+  board: PresenterDecisionBoard | null;
+  error: string | null;
   loading: boolean;
+  search: string;
 }) {
   if (loading) {
-    return <p className="muted-copy">Loading decision board</p>;
+    return (
+      <GlobalLoader
+        label="Generating decision board"
+        detail="Identifying grounded decisions, asks, risks, and watch items."
+        tone="ai"
+      />
+    );
   }
+  const searchTerm = search.trim();
+  const visibleSignals = filterDecisionBoardSignals(board?.signals ?? [], searchTerm);
+  const groupedSignals = groupDecisionBoardSignals(visibleSignals);
+
   return (
-    <section className="presenter-panel">
-      <div className="contributor-table-wrap">
-        <table className="updates-table">
-          <thead>
-            <tr>
-              <th>Partner</th>
-              <th>Signal</th>
-              <th>Severity</th>
-              <th>Rationale</th>
-            </tr>
-          </thead>
-          <tbody>
-            {!analysis?.decision_board.length ? (
-              <tr>
-                <td colSpan={4}>No decision-board signals for this scope</td>
-              </tr>
-            ) : null}
-            {analysis?.decision_board.map((item) => (
-              <tr key={`${item.partner_id}-${item.signal}`}>
-                <td>{item.partner_name}</td>
-                <td>{item.signal}</td>
-                <td>
-                  <span className={`status-pill ${item.severity.toLowerCase()}`}>
-                    {item.severity}
-                  </span>
-                </td>
-                <td>{item.rationale}</td>
-              </tr>
+    <section className="presenter-panel decision-board-panel">
+      <div className="decision-board-card">
+        <div className="decision-board-head">
+          <span className="decision-board-mark" aria-hidden="true" />
+          <div>
+            <h2>Decision Board</h2>
+            <p>Generated from approved updates in the selected scope.</p>
+          </div>
+          {board?.signals.length ? (
+            <span className="decision-board-count">{board.signals.length} open</span>
+          ) : null}
+        </div>
+        {error ? <p className="workspace-error inline-error">{error}</p> : null}
+        {!error && !board?.signals.length ? (
+          <p className="decision-board-empty">
+            {board?.source_note ??
+              "No open blockers, risks, deadlines, or action items detected for this selection."}
+          </p>
+        ) : null}
+        {!error && board?.signals.length && !visibleSignals.length ? (
+          <p className="decision-board-empty">No decision board items match the search term.</p>
+        ) : null}
+        {visibleSignals.length ? (
+          <div className="decision-board-groups">
+            {groupedSignals.map((group) => (
+              <section
+                className={`decision-board-group ${group.priority.toLowerCase()}`}
+                key={group.priority}
+              >
+                <div className="decision-board-group-head">
+                  <span>{group.label}</span>
+                  <span>{group.items.length}</span>
+                </div>
+                <div className="decision-board-stack">
+                  {group.items.map((item, index) => (
+                    <article
+                      className={`decision-board-item ${group.priority.toLowerCase()}`}
+                      key={`${item.partner_id ?? item.partner_name ?? "partner"}-${item.title}-${index}`}
+                    >
+                      <div className="decision-board-item-partner">
+                        {renderHighlightedText(item.partner_name ?? "Selected partner", searchTerm)}
+                      </div>
+                      <div className="decision-board-item-title">
+                        {renderHighlightedText(item.title, searchTerm)}
+                      </div>
+                      <p className="decision-board-item-action">
+                        <span>Action</span>
+                        {renderHighlightedText(item.action, searchTerm)}
+                      </p>
+                      <p className="decision-board-item-copy">
+                        <span>Rationale</span>
+                        {renderHighlightedText(item.rationale, searchTerm)}
+                      </p>
+                      <div className="decision-board-item-meta">
+                        {item.owner ? <span>Owner: {renderHighlightedText(item.owner, searchTerm)}</span> : null}
+                        {item.due_date ? (
+                          <span>Due: {renderHighlightedText(item.due_date, searchTerm)}</span>
+                        ) : null}
+                        {item.severity ? (
+                          <span>Severity: {renderHighlightedText(item.severity, searchTerm)}</span>
+                        ) : null}
+                        {item.source_url ? (
+                          <a href={item.source_url} target="_blank" rel="noreferrer">
+                            {renderHighlightedText(item.source_label ?? "Source", searchTerm)}
+                          </a>
+                        ) : item.source_label ? (
+                          <span>{renderHighlightedText(item.source_label, searchTerm)}</span>
+                        ) : null}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </section>
             ))}
-          </tbody>
-        </table>
+          </div>
+        ) : null}
+        {board?.source_note && board.signals.length ? (
+          <p className="decision-board-note">{board.source_note}</p>
+        ) : null}
       </div>
     </section>
   );
@@ -306,7 +794,6 @@ function PartnerIntelligencePanel({
   loading,
   metadata,
   partners,
-  selectedPartnerCount,
   selectedPartner,
   updates,
 }: {
@@ -314,30 +801,84 @@ function PartnerIntelligencePanel({
   loading: boolean;
   metadata: PresenterMetadata | null;
   partners: PresenterPartner[];
-  selectedPartnerCount: number;
   selectedPartner: PresenterPartner | null;
   updates: PresenterUpdate[];
 }) {
+  const [metadataCollapsed, setMetadataCollapsed] = useState(false);
+  const [metadataWidth, setMetadataWidth] = useState(420);
+
   if (loading) {
-    return <p className="muted-copy presenter-feed-loading">Loading partner intelligence</p>;
+    return (
+      <GlobalLoader
+        label="Loading partner intelligence"
+        detail="Gathering approved updates and partner metadata."
+      />
+    );
   }
 
-  const scopeHint = selectedPartner
-    ? null
-    : selectedPartnerCount
-      ? "Multiple partners selected. Select one partner to show partner metadata at the side."
-      : "All partners selected. Select one partner to show partner metadata at the side.";
+  function startMetadataResize(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = metadataWidth;
+
+    function handleMove(moveEvent: PointerEvent) {
+      const nextWidth = clamp(startWidth + moveEvent.clientX - startX, 280, 720);
+      setMetadataWidth(nextWidth);
+    }
+
+    function handleUp() {
+      document.removeEventListener("pointermove", handleMove);
+      document.removeEventListener("pointerup", handleUp);
+    }
+
+    document.addEventListener("pointermove", handleMove);
+    document.addEventListener("pointerup", handleUp);
+  }
+
+  const layoutStyle = selectedPartner
+    ? ({
+        "--presenter-meta-width": metadataCollapsed ? "190px" : `${metadataWidth}px`,
+      } as CSSProperties)
+    : undefined;
 
   return (
-    <div className={selectedPartner ? "presenter-board-layout with-metadata" : "presenter-board-layout"}>
+    <div
+      className={
+        selectedPartner
+          ? `presenter-board-layout with-metadata${metadataCollapsed ? " metadata-collapsed" : ""}`
+          : "presenter-board-layout"
+      }
+      style={layoutStyle}
+    >
       {selectedPartner ? (
-        <PresenterMetadataPane cycle={cycle} metadata={metadata} selectedPartner={selectedPartner} />
+        <PresenterMetadataPane
+          collapsed={metadataCollapsed}
+          cycle={cycle}
+          metadata={metadata}
+          onResizeStart={startMetadataResize}
+          onToggleCollapsed={() => setMetadataCollapsed((current) => !current)}
+          selectedPartner={selectedPartner}
+        />
       ) : null}
       <section className="presenter-feed" aria-label="Approved updates">
-        {scopeHint ? <p className="presenter-scope-hint">{scopeHint}</p> : null}
         <PresenterUpdatesFeed partners={partners} updates={updates} />
       </section>
     </div>
+  );
+}
+
+function EventCalendarPanel({ loading }: { loading: boolean }) {
+  if (loading) {
+    return <GlobalLoader label="Loading event calendar" detail="Preparing events for this period." />;
+  }
+
+  return (
+    <section className="presenter-panel">
+      <div className="presenter-empty-module">
+        <strong>Event Calendar</strong>
+        <span>Calendar events will appear here once this presenter module is connected.</span>
+      </div>
+    </section>
   );
 }
 
@@ -449,19 +990,43 @@ function PresenterUpdateSummary({ update }: { update: PresenterUpdate }) {
 }
 
 function PresenterMetadataPane({
+  collapsed,
   cycle,
   metadata,
+  onResizeStart,
+  onToggleCollapsed,
   selectedPartner,
 }: {
+  collapsed: boolean;
   cycle: string;
   metadata: PresenterMetadata | null;
+  onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onToggleCollapsed: () => void;
   selectedPartner: PresenterPartner;
 }) {
   return (
-    <aside className="presenter-meta-pane" aria-label="Partner metadata">
+    <aside className={collapsed ? "presenter-meta-pane collapsed" : "presenter-meta-pane"} aria-label="Partner metadata">
       <div className="presenter-meta-head">
-        <div className="presenter-meta-title">Partner metadata</div>
+        <div className="presenter-meta-title">Partner Metadata</div>
+        <button
+          className="presenter-meta-toggle"
+          type="button"
+          aria-label={collapsed ? "Expand partner metadata" : "Collapse partner metadata"}
+          onClick={onToggleCollapsed}
+        >
+          {collapsed ? "›" : "‹"}
+        </button>
       </div>
+      {!collapsed ? (
+        <div
+          className="presenter-meta-resize"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize partner metadata"
+          onPointerDown={onResizeStart}
+        />
+      ) : null}
+      {collapsed ? null : (
       <div className="presenter-meta-body">
         <div className="presenter-meta-card">
           <div className="presenter-meta-card-title">Status</div>
@@ -487,6 +1052,7 @@ function PresenterMetadataPane({
         <PresenterRisksTable metadata={metadata} />
         <PresenterResources metadata={metadata} selectedPartnerName={selectedPartner.name} />
       </div>
+      )}
     </aside>
   );
 }
@@ -563,11 +1129,13 @@ function PresenterResources({
   metadata: PresenterMetadata | null;
   selectedPartnerName: string;
 }) {
+  const visibleResources = metadata?.resources.filter((resource) => !resource.disabled) ?? [];
+
   return (
     <div className="presenter-meta-card">
       <div className="presenter-meta-card-title">Resource library</div>
       <div className="presenter-meta-card-body">
-        {metadata?.resources.length ? (
+        {visibleResources.length ? (
           <table className="presenter-meta-table">
             <thead>
               <tr>
@@ -576,7 +1144,7 @@ function PresenterResources({
               </tr>
             </thead>
             <tbody>
-              {metadata.resources.map((resource) => (
+              {visibleResources.map((resource) => (
                 <tr key={resource.resource_link_id}>
                   <td>{resource.title}</td>
                   <td>
@@ -585,7 +1153,6 @@ function PresenterResources({
                       href={resource.url}
                       target="_blank"
                       rel="noreferrer"
-                      aria-disabled={resource.disabled}
                     >
                       {resource.url}
                     </a>
@@ -605,51 +1172,28 @@ function PresenterResources({
   );
 }
 
-function MetricCard({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="presenter-metric-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function SourceMix({ sourceMix }: { sourceMix: Record<string, number> }) {
-  const entries = Object.entries(sourceMix);
-  if (!entries.length) {
-    return <p className="muted-copy">No source mix available.</p>;
-  }
-  return (
-    <div className="source-mix">
-      {entries.map(([source, count]) => (
-        <span key={source}>
-          {source}: {count}
-        </span>
-      ))}
-    </div>
-  );
-}
-
 function AskAiPanel({
-  analysis,
   partners,
+  period,
   selectedPartnerIds,
   selectedPartner,
-  updates,
   onClose,
   onPartnerSelectionChange,
 }: {
-  analysis: PresenterAnalysis | null;
   partners: PresenterPartner[];
+  period: PresenterPeriodQuery;
   selectedPartnerIds: string[];
   selectedPartner: PresenterPartner | null;
-  updates: PresenterUpdate[];
   onClose: () => void;
   onPartnerSelectionChange: (partnerIds: string[]) => void;
 }) {
   const [question, setQuestion] = useState("");
   const [scopeSearch, setScopeSearch] = useState("");
-  const [messages, setMessages] = useState<Array<{ id: number; kind: "user" | "assistant"; text: string }>>([]);
+  const [panelWidth, setPanelWidth] = useState(540);
+  const [busy, setBusy] = useState(false);
+  const [messages, setMessages] = useState<
+    Array<{ id: number; kind: "user" | "assistant"; text: string; error?: boolean; pending?: boolean }>
+  >([]);
   const scopeLabel = selectedPartner
     ? selectedPartner.name
     : selectedPartnerIds.length
@@ -659,30 +1203,89 @@ function AskAiPanel({
     partner.name.toLowerCase().includes(scopeSearch.trim().toLowerCase()),
   );
 
-  function submitQuestion(value: string) {
+  async function submitQuestion(value: string) {
     const cleaned = value.trim();
-    if (!cleaned) {
+    if (!cleaned || busy) {
       return;
     }
+    const userId = Date.now();
+    const assistantId = userId + 1;
     setMessages((current) => [
       ...current,
-      { id: Date.now(), kind: "user", text: cleaned },
-      {
-        id: Date.now() + 1,
-        kind: "assistant",
-        text: buildAskAiAnswer(cleaned, scopeLabel, analysis, updates),
-      },
+      { id: userId, kind: "user", text: cleaned },
+      { id: assistantId, kind: "assistant", text: "Thinking through the selected approved context...", pending: true },
     ]);
     setQuestion("");
+    setBusy(true);
+    try {
+      const answer = await askPresenterAi({
+        cycle: period.cycle,
+        dateStart: period.dateStart,
+        dateEnd: period.dateEnd,
+        partnerIds: selectedPartnerIds,
+        question: cleaned,
+      });
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantId
+            ? { id: assistantId, kind: "assistant", text: answer.answer }
+            : message,
+        ),
+      );
+    } catch (error) {
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantId
+            ? {
+                id: assistantId,
+                kind: "assistant",
+                text: error instanceof Error ? error.message : "Unable to ask AI assistant.",
+                error: true,
+              }
+            : message,
+        ),
+      );
+    } finally {
+      setBusy(false);
+    }
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    submitQuestion(question);
+    void submitQuestion(question);
+  }
+
+  function startPanelResize(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = panelWidth;
+
+    function handleMove(moveEvent: PointerEvent) {
+      setPanelWidth(clamp(startWidth + startX - moveEvent.clientX, 420, 820));
+    }
+
+    function handleUp() {
+      document.removeEventListener("pointermove", handleMove);
+      document.removeEventListener("pointerup", handleUp);
+    }
+
+    document.addEventListener("pointermove", handleMove);
+    document.addEventListener("pointerup", handleUp);
   }
 
   return (
-    <aside className="presenter-ai-panel" aria-label="Ask AI">
+    <aside
+      className="presenter-ai-panel"
+      aria-label="Ask AI"
+      style={{ "--presenter-ai-width": `${panelWidth}px` } as CSSProperties}
+    >
+      <div
+        className="presenter-ai-resize"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize Ask AI panel"
+        onPointerDown={startPanelResize}
+      />
       <div className="presenter-ai-panel-head">
         <div className="presenter-ai-title">
           <span className="presenter-ai-status-dot" aria-hidden="true" />
@@ -692,6 +1295,10 @@ function AskAiPanel({
         <button type="button" className="presenter-ai-close" aria-label="Close Ask AI" onClick={onClose}>
           ×
         </button>
+      </div>
+      <div className="presenter-ai-config">
+        <span>Grounded mode</span>
+        <strong>Approved updates only</strong>
       </div>
       <div className="presenter-ai-scope">
         <div className="presenter-ai-scope-main">
@@ -767,7 +1374,8 @@ function AskAiPanel({
                 className="presenter-ai-suggestion"
                 type="button"
                 key={item}
-                onClick={() => submitQuestion(item)}
+                disabled={busy}
+                onClick={() => void submitQuestion(item)}
               >
                 {item}
               </button>
@@ -791,7 +1399,17 @@ function AskAiPanel({
                 message.kind === "user" ? "presenter-ai-bubble question" : "presenter-ai-answer-shell"
               }
             >
-              <div className="presenter-ai-answer-text">{message.text}</div>
+              <div
+                className={
+                  message.error
+                    ? "presenter-ai-answer-text error"
+                    : message.pending
+                      ? "presenter-ai-answer-text pending"
+                      : "presenter-ai-answer-text"
+                }
+              >
+                {renderAskAiText(message.text)}
+              </div>
             </div>
             {message.kind === "user" ? <span className="presenter-ai-user-avatar">You</span> : null}
           </div>
@@ -804,12 +1422,30 @@ function AskAiPanel({
           placeholder="Ask about a partner, source, or cycle..."
           aria-label="Ask AI"
           autoComplete="off"
+          disabled={busy}
         />
         <button className="presenter-ai-voice-button" type="button" aria-label="Ask with voice" title="Ask with voice" />
-        <button className="presenter-ai-send" type="submit" aria-label="Send AI question" title="Send" />
+        <button className="presenter-ai-send" type="submit" aria-label="Send AI question" title="Send" disabled={busy} />
       </form>
     </aside>
   );
+}
+
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function formatPeriodLabel(period: PresenterPeriodQuery): string {
+  if (period.dateStart && period.dateEnd) {
+    return `${formatShortDate(period.dateStart)} - ${formatShortDate(period.dateEnd)}`;
+  }
+  return formatCycleLabel(period.cycle);
+}
+
+function formatShortDate(value: string): string {
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(`${value}T00:00:00`));
 }
 
 function formatCycleLabel(value: string): string {
@@ -819,10 +1455,48 @@ function formatCycleLabel(value: string): string {
   }).format(new Date(`${value}-01T00:00:00`));
 }
 
+function parseCycle(cycle: string): { year: number; month: number } | null {
+  const match = /^(\d{4})-(\d{2})$/.exec(cycle);
+  if (!match) {
+    return null;
+  }
+  return { year: Number(match[1]), month: Number(match[2]) };
+}
+
+function currentCycle(): string {
+  return new Date().toISOString().slice(0, 7);
+}
+
 function shiftCycle(value: string, months: number): string {
   const [year, month] = value.split("-").map(Number);
   const next = new Date(year, month - 1 + months, 1);
   return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function lastDayOfCycle(cycle: string): string {
+  const parsed = parseCycle(cycle);
+  if (!parsed) {
+    return `${cycle}-01`;
+  }
+  const lastDay = new Date(parsed.year, parsed.month, 0);
+  return `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, "0")}-${String(
+    lastDay.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+function shiftIsoDateByMonths(value: string, months: number): string | null {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) {
+    return null;
+  }
+  const next = new Date(year, month - 1 + months, day);
+  return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(
+    next.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 function groupUpdatesByPartner(updates: PresenterUpdate[], partners: PresenterPartner[]) {
@@ -857,34 +1531,132 @@ function splitMetadataValue(value: string | null | undefined): string[] {
     .filter(Boolean);
 }
 
-function looksLikeAllowedUpdateHtml(value: string): boolean {
-  return /<\/?(a|strong|b|em|i|u|ol|ul|li)\b/i.test(value);
+function filterSummaryBullets(bullets: string[], searchTerm: string): string[] {
+  const cleanedSearch = searchTerm.toLowerCase();
+  if (!cleanedSearch) {
+    return bullets;
+  }
+  return bullets.filter((bullet) => bullet.toLowerCase().includes(cleanedSearch));
 }
 
-function buildAskAiAnswer(
-  question: string,
-  scopeLabel: string,
-  analysis: PresenterAnalysis | null,
-  updates: PresenterUpdate[],
-): string {
-  const updateCount = analysis?.update_count ?? updates.length;
-  const partnerCount = analysis?.partner_count ?? new Set(updates.map((update) => update.partner_id)).size;
-  const firstUpdate = updates[0]?.summary?.replace(/<[^>]*>/g, "");
-  const riskCount = analysis?.decision_board.length ?? 0;
-
-  if (/risk|ask|blocker/i.test(question)) {
-    return riskCount
-      ? `${scopeLabel} has ${riskCount} decision-board signal${riskCount === 1 ? "" : "s"} in this scope. The approved updates should be reviewed with the metadata risk list before sending a presenter summary.`
-      : `${scopeLabel} has no decision-board risks flagged from approved metadata in this scope.`;
+function filterDecisionBoardSignals(
+  signals: PresenterDecisionBoardSignal[],
+  searchTerm: string,
+): PresenterDecisionBoardSignal[] {
+  const cleanedSearch = searchTerm.toLowerCase();
+  if (!cleanedSearch) {
+    return signals;
   }
+  return signals.filter((signal) =>
+    [
+      signal.partner_name,
+      signal.priority,
+      signal.title,
+      signal.action,
+      signal.rationale,
+      signal.owner,
+      signal.due_date,
+      signal.severity,
+      signal.source_label,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .includes(cleanedSearch),
+  );
+}
 
-  if (/next|month|coming/i.test(question)) {
-    return firstUpdate
-      ? `${scopeLabel} has ${updateCount} approved update${updateCount === 1 ? "" : "s"} across ${partnerCount} partner${partnerCount === 1 ? "" : "s"}. The most recent signal to carry forward is: ${firstUpdate}`
-      : `${scopeLabel} has no approved updates in this scope yet.`;
+function groupDecisionBoardSignals(signals: PresenterDecisionBoardSignal[]) {
+  const groups = [
+    { priority: "P1", label: "Critical", items: [] as PresenterDecisionBoardSignal[] },
+    { priority: "P2", label: "Urgent", items: [] as PresenterDecisionBoardSignal[] },
+    { priority: "P3", label: "Watch", items: [] as PresenterDecisionBoardSignal[] },
+  ];
+  const fallback = groups[2];
+  for (const signal of signals) {
+    const group = groups.find((item) => item.priority === signal.priority) ?? fallback;
+    group.items.push(signal);
   }
+  return groups.filter((group) => group.items.length > 0);
+}
 
-  return `${scopeLabel} currently has ${updateCount} approved update${updateCount === 1 ? "" : "s"} across ${partnerCount} partner${partnerCount === 1 ? "" : "s"}. ${analysis?.executive_summary ?? "No generated summary is available yet."}`;
+function renderHighlightedText(text: string, searchTerm: string): Array<string | ReactElement> {
+  const parts: Array<string | ReactElement> = [];
+  const linkPattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+  let lastIndex = 0;
+  let match = linkPattern.exec(text);
+  while (match) {
+    if (match.index > lastIndex) {
+      parts.push(...highlightPlainText(text.slice(lastIndex, match.index), searchTerm));
+    }
+    parts.push(
+      <a href={match[2]} key={`${match[1]}-${match.index}`} target="_blank" rel="noreferrer">
+        {highlightPlainText(match[1], searchTerm)}
+      </a>,
+    );
+    lastIndex = match.index + match[0].length;
+    match = linkPattern.exec(text);
+  }
+  if (lastIndex < text.length) {
+    parts.push(...highlightPlainText(text.slice(lastIndex), searchTerm));
+  }
+  return parts.length ? parts : [text];
+}
+
+function highlightPlainText(text: string, searchTerm: string): Array<string | ReactElement> {
+  const cleanedSearch = searchTerm.trim();
+  if (!cleanedSearch) {
+    return [text];
+  }
+  const pattern = new RegExp(`(${escapeRegExp(cleanedSearch)})`, "ig");
+  return text.split(pattern).map((part, index) =>
+    part.toLowerCase() === cleanedSearch.toLowerCase() ? (
+      <mark key={`${part}-${index}`}>{part}</mark>
+    ) : (
+      part
+    ),
+  );
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function renderAskAiText(text: string): ReactElement[] {
+  const lines = text.split("\n");
+  return lines.map((line, lineIndex) => (
+    <span key={`${lineIndex}-${line}`}>
+      {renderAskAiInlineLinks(line)}
+      {lineIndex < lines.length - 1 ? <br /> : null}
+    </span>
+  ));
+}
+
+function renderAskAiInlineLinks(text: string): Array<string | ReactElement> {
+  const parts: Array<string | ReactElement> = [];
+  const linkPattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+  let lastIndex = 0;
+  let match = linkPattern.exec(text);
+  while (match) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    parts.push(
+      <a href={match[2]} key={`${match[1]}-${match.index}`} target="_blank" rel="noreferrer">
+        {match[1]}
+      </a>,
+    );
+    lastIndex = match.index + match[0].length;
+    match = linkPattern.exec(text);
+  }
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+  return parts.length ? parts : [text];
+}
+
+function looksLikeAllowedUpdateHtml(value: string): boolean {
+  return /<\/?(a|strong|b|em|i|u|ol|ul|li)\b/i.test(value);
 }
 
 function getPartnerInitials(name: string) {

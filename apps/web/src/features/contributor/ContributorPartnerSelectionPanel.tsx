@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 
+import { GlobalLoader } from "@/components/foundation/GlobalLoader";
 import { ContributorDashboardShell } from "@/features/contributor/ContributorDashboardShell";
 import { ContributorPartner } from "@/features/contributor/contributor-partners-api";
 
@@ -57,7 +58,12 @@ export function ContributorPartnerSelectionPanel({
       )}
 
       {error ? <p className="workspace-error inline-error">{error}</p> : null}
-      {loading ? <p className="muted-copy">Loading assigned partners</p> : null}
+      {loading ? (
+        <GlobalLoader
+          label="Loading assigned partners"
+          detail="Checking which partner workspaces are available to you."
+        />
+      ) : null}
 
       {!loading && partners.length === 0 ? (
         <div>

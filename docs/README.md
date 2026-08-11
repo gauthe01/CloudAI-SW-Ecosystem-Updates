@@ -26,6 +26,7 @@ Start here:
 - `feature_24b_model_output_contract_validation.md`
 - `feature_24c_model_adapter_dry_run_extraction.md`
 - `feature_24c_1_controlled_ai_dry_run_probe.md`
+- `feature_26_global_loading_experience.md`
 - `pending_tasks_and_blockers.md`
 
 `Gold/` may be used as a reference archive, but documentation and implementation

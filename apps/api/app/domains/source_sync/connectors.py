@@ -1,0 +1,500 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any, Protocol
+
+import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import Settings
+from app.db.models.connected_source import (
+    ConnectedSource,
+    ConnectedSourceJiraIssue,
+    ConnectedSourceSlackChannel,
+    ConnectedSourceType,
+)
+from app.db.models.integration import IntegrationType
+from app.db.models.source_event import SourcePayloadRetentionPolicy
+from app.db.models.source_sync import SourceSyncState
+from app.domains.admin.integrations.secrets import get_integration_secret_value
+from app.domains.source_events.schemas import SourceEventIngestRequest
+
+
+@dataclass(frozen=True)
+class SyncItem:
+    external_event_id: str
+    idempotency_key: str
+    source_url: str | None
+    source_event_timestamp: datetime
+    technical_metadata: dict[str, Any]
+    raw_payload_json: dict[str, Any] | None = None
+    retention_policy: str = SourcePayloadRetentionPolicy.structured_payload.value
+
+
+@dataclass(frozen=True)
+class ConnectorSyncResult:
+    items: list[SyncItem]
+    cursor_value: str | None
+    cursor_timestamp: datetime | None
+    ignored_count: int = 0
+    skipped_reason: str | None = None
+
+
+class SourceSyncConnector(Protocol):
+    source_type: ConnectedSourceType
+
+    async def fetch(
+        self,
+        *,
+        source: ConnectedSource,
+        state: SourceSyncState,
+    ) -> ConnectorSyncResult:
+        """Fetch new source items and normalize them into source-event requests."""
+
+
+class UnsupportedSourceSyncConnector:
+    def __init__(self, source_type: ConnectedSourceType) -> None:
+        self.source_type = source_type
+
+    async def fetch(
+        self,
+        *,
+        source: ConnectedSource,
+        state: SourceSyncState,
+    ) -> ConnectorSyncResult:
+        return ConnectorSyncResult(
+            items=[],
+            cursor_value=state.cursor_value,
+            cursor_timestamp=state.cursor_timestamp,
+            skipped_reason=f"Automatic polling is not implemented for {source.source_type}.",
+        )
+
+
+class SlackSourceSyncConnector:
+    source_type = ConnectedSourceType.slack_channel
+
+    def __init__(self, db: AsyncSession, settings: Settings) -> None:
+        self.db = db
+        self.settings = settings
+
+    async def fetch(
+        self,
+        *,
+        source: ConnectedSource,
+        state: SourceSyncState,
+    ) -> ConnectorSyncResult:
+        detail = await self._load_detail(source)
+        bot_token = await self._bot_token()
+        oldest = slack_oldest_cursor(
+            state=state,
+            initial_lookback_days=self.settings.source_sync_initial_lookback_days,
+        )
+        response = await self._get_history(
+            bot_token=bot_token,
+            channel_id=detail.channel_id,
+            oldest=oldest,
+        )
+        messages = [
+            message for message in response.get("messages", [])
+            if should_enqueue_slack_message(message)
+        ]
+        items = [
+            slack_message_to_sync_item(
+                source=source,
+                detail=detail,
+                message=message,
+            )
+            for message in reversed(messages)
+        ]
+        latest_ts = latest_slack_ts(messages)
+        return ConnectorSyncResult(
+            items=items,
+            cursor_value=latest_ts or state.cursor_value,
+            cursor_timestamp=(
+                slack_timestamp_to_datetime(latest_ts)
+                if latest_ts
+                else state.cursor_timestamp
+            ),
+            ignored_count=max(0, len(response.get("messages", [])) - len(messages)),
+        )
+
+    async def _load_detail(self, source: ConnectedSource) -> ConnectedSourceSlackChannel:
+        result = await self.db.execute(
+            select(ConnectedSourceSlackChannel).where(
+                ConnectedSourceSlackChannel.connected_source_id == source.connected_source_id
+            )
+        )
+        detail = result.scalar_one_or_none()
+        if detail is None:
+            raise RuntimeError("Slack connected source is missing channel details.")
+        return detail
+
+    async def _bot_token(self) -> str:
+        token = await get_integration_secret_value(
+            self.db,
+            self.settings,
+            integration_type=IntegrationType.slack,
+            secret_name="bot_token",
+        )
+        if not token:
+            raise RuntimeError("Slack bot token is not configured.")
+        return token
+
+    async def _get_history(
+        self,
+        *,
+        bot_token: str,
+        channel_id: str,
+        oldest: str,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(
+            timeout=self.settings.source_sync_http_timeout_seconds
+        ) as client:
+            response = await client.get(
+                "https://slack.com/api/conversations.history",
+                headers={"Authorization": f"Bearer {bot_token}"},
+                params={
+                    "channel": channel_id,
+                    "oldest": oldest,
+                    "limit": 100,
+                    "inclusive": "false",
+                },
+            )
+        response.raise_for_status()
+        payload = response.json()
+        if not payload.get("ok"):
+            raise RuntimeError(f"Slack history fetch failed: {payload.get('error') or 'unknown'}")
+        return payload
+
+
+class JiraSourceSyncConnector:
+    source_type = ConnectedSourceType.jira_issue
+
+    def __init__(self, db: AsyncSession, settings: Settings) -> None:
+        self.db = db
+        self.settings = settings
+
+    async def fetch(
+        self,
+        *,
+        source: ConnectedSource,
+        state: SourceSyncState,
+    ) -> ConnectorSyncResult:
+        detail = await self._load_detail(source)
+        base_url = await self._secret("base_url")
+        token = await self._secret("service_token")
+        issue = await self._fetch_issue(
+            base_url=base_url.rstrip("/"),
+            token=token,
+            issue_key=detail.issue_key,
+        )
+        since = state.cursor_timestamp or (
+            datetime.now(UTC) - timedelta(days=self.settings.source_sync_initial_lookback_days)
+        )
+        candidates = jira_issue_to_sync_items(
+            source=source,
+            detail=detail,
+            issue=issue,
+            base_url=base_url.rstrip("/"),
+            since=since,
+        )
+        latest = max((item.source_event_timestamp for item in candidates), default=None)
+        return ConnectorSyncResult(
+            items=candidates,
+            cursor_value=latest.isoformat() if latest else state.cursor_value,
+            cursor_timestamp=latest or state.cursor_timestamp,
+        )
+
+    async def _load_detail(self, source: ConnectedSource) -> ConnectedSourceJiraIssue:
+        result = await self.db.execute(
+            select(ConnectedSourceJiraIssue).where(
+                ConnectedSourceJiraIssue.connected_source_id == source.connected_source_id
+            )
+        )
+        detail = result.scalar_one_or_none()
+        if detail is None:
+            raise RuntimeError("Jira connected source is missing issue details.")
+        return detail
+
+    async def _secret(self, secret_name: str) -> str:
+        value = await get_integration_secret_value(
+            self.db,
+            self.settings,
+            integration_type=IntegrationType.jira,
+            secret_name=secret_name,
+        )
+        if not value:
+            raise RuntimeError(f"Jira {secret_name} is not configured.")
+        return value
+
+    async def _fetch_issue(self, *, base_url: str, token: str, issue_key: str) -> dict[str, Any]:
+        async with httpx.AsyncClient(
+            timeout=self.settings.source_sync_http_timeout_seconds
+        ) as client:
+            response = await client.get(
+                f"{base_url}/rest/api/2/issue/{issue_key}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                },
+                params={
+                    "expand": "changelog",
+                    "fields": "summary,status,priority,duedate,attachment,comment",
+                },
+            )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("Jira issue fetch returned an invalid payload.")
+        return payload
+
+
+def connector_for_source(
+    *,
+    source_type: str,
+    db: AsyncSession,
+    settings: Settings,
+) -> SourceSyncConnector:
+    parsed = ConnectedSourceType(source_type)
+    if parsed == ConnectedSourceType.slack_channel:
+        return SlackSourceSyncConnector(db, settings)
+    if parsed == ConnectedSourceType.jira_issue:
+        return JiraSourceSyncConnector(db, settings)
+    return UnsupportedSourceSyncConnector(parsed)
+
+
+def to_ingest_request(item: SyncItem, connected_source_id) -> SourceEventIngestRequest:
+    return SourceEventIngestRequest(
+        connected_source_id=connected_source_id,
+        external_event_id=item.external_event_id,
+        idempotency_key=item.idempotency_key,
+        source_url=item.source_url,
+        source_event_timestamp=item.source_event_timestamp,
+        technical_metadata=item.technical_metadata,
+        raw_payload_json=item.raw_payload_json,
+        retention_policy=item.retention_policy,
+    )
+
+
+def slack_oldest_cursor(*, state: SourceSyncState, initial_lookback_days: int) -> str:
+    if state.cursor_value:
+        return state.cursor_value
+    if state.cursor_timestamp:
+        return str(state.cursor_timestamp.timestamp())
+    return str((datetime.now(UTC) - timedelta(days=initial_lookback_days)).timestamp())
+
+
+def should_enqueue_slack_message(message: dict[str, Any]) -> bool:
+    if message.get("subtype") or message.get("bot_id"):
+        return False
+    return bool(str(message.get("text") or "").strip() and str(message.get("ts") or "").strip())
+
+
+def latest_slack_ts(messages: list[dict[str, Any]]) -> str | None:
+    values = [str(message.get("ts") or "") for message in messages if message.get("ts")]
+    return max(values, key=float) if values else None
+
+
+def slack_timestamp_to_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromtimestamp(float(value), UTC)
+
+
+def slack_message_to_sync_item(
+    *,
+    source: ConnectedSource,
+    detail: ConnectedSourceSlackChannel,
+    message: dict[str, Any],
+) -> SyncItem:
+    ts = str(message["ts"])
+    text = str(message.get("text") or "").strip()
+    event_timestamp = slack_timestamp_to_datetime(ts) or datetime.now(UTC)
+    source_url = f"https://slack.com/app_redirect?channel={detail.channel_id}&message_ts={ts}"
+    source_payload = {
+        "source_item": {
+            "source_type": "slack",
+            "event_type": "message",
+            "channel_name": detail.channel_name,
+            "channel_id": detail.channel_id,
+            "message_ts": ts,
+            "thread_ts": message.get("thread_ts"),
+            "author": message.get("user") or message.get("username"),
+            "text": text,
+            "source_url": source_url,
+            "source_timestamp": event_timestamp.isoformat(),
+        }
+    }
+    return SyncItem(
+        external_event_id=f"{detail.channel_id}:{ts}",
+        idempotency_key=f"sync:slack:{source.connected_source_id}:{ts}",
+        source_url=source_url,
+        source_event_timestamp=event_timestamp,
+        technical_metadata={
+            "sync_kind": "poll",
+            "channel_id": detail.channel_id,
+            "channel_name": detail.channel_name,
+            "message_ts": ts,
+            "thread_ts": message.get("thread_ts"),
+        },
+        raw_payload_json=source_payload,
+    )
+
+
+def jira_issue_to_sync_items(
+    *,
+    source: ConnectedSource,
+    detail: ConnectedSourceJiraIssue,
+    issue: dict[str, Any],
+    base_url: str,
+    since: datetime,
+) -> list[SyncItem]:
+    fields = issue.get("fields") if isinstance(issue.get("fields"), dict) else {}
+    issue_summary = str(fields.get("summary") or issue.get("key") or detail.issue_key)
+    issue_url = detail.issue_url or f"{base_url}/browse/{detail.issue_key}"
+    items: list[SyncItem] = []
+
+    comments = nested_list(fields, "comment", "comments")
+    for comment in comments:
+        comment_id = str(comment.get("id") or "")
+        body = jira_text(comment.get("body"))
+        event_timestamp = parse_jira_datetime(comment.get("updated") or comment.get("created"))
+        if not comment_id or not body or event_timestamp <= since:
+            continue
+        source_url = f"{issue_url}?focusedCommentId={comment_id}"
+        items.append(
+            SyncItem(
+                external_event_id=f"{detail.issue_key}:comment:{comment_id}",
+                idempotency_key=f"sync:jira:{source.connected_source_id}:comment:{comment_id}",
+                source_url=source_url,
+                source_event_timestamp=event_timestamp,
+                technical_metadata={
+                    "sync_kind": "poll",
+                    "issue_key": detail.issue_key,
+                    "event_type": "comment",
+                    "comment_id": comment_id,
+                },
+                raw_payload_json={
+                    "source_item": {
+                        "source_type": "jira",
+                        "event_type": "comment",
+                        "issue_key": detail.issue_key,
+                        "issue_summary": issue_summary,
+                        "comment_id": comment_id,
+                        "author": jira_user_name(comment.get("author")),
+                        "body": body,
+                        "source_url": source_url,
+                        "source_timestamp": event_timestamp.isoformat(),
+                    }
+                },
+            )
+        )
+
+    histories = nested_list(issue, "changelog", "histories")
+    for history in histories:
+        history_id = str(history.get("id") or "")
+        event_timestamp = parse_jira_datetime(history.get("created"))
+        changed_items = [
+            item for item in history.get("items", [])
+            if isinstance(item, dict) and is_meaningful_jira_change(item)
+        ]
+        if not history_id or not changed_items or event_timestamp <= since:
+            continue
+        items.append(
+            SyncItem(
+                external_event_id=f"{detail.issue_key}:changelog:{history_id}",
+                idempotency_key=f"sync:jira:{source.connected_source_id}:changelog:{history_id}",
+                source_url=issue_url,
+                source_event_timestamp=event_timestamp,
+                technical_metadata={
+                    "sync_kind": "poll",
+                    "issue_key": detail.issue_key,
+                    "event_type": "changelog",
+                    "history_id": history_id,
+                    "changed_fields": [item.get("field") for item in changed_items],
+                },
+                raw_payload_json={
+                    "source_item": {
+                        "source_type": "jira",
+                        "event_type": "changelog",
+                        "issue_key": detail.issue_key,
+                        "issue_summary": issue_summary,
+                        "history_id": history_id,
+                        "author": jira_user_name(history.get("author")),
+                        "changes": changed_items,
+                        "source_url": issue_url,
+                        "source_timestamp": event_timestamp.isoformat(),
+                    }
+                },
+            )
+        )
+
+    return sorted(items, key=lambda item: item.source_event_timestamp)
+
+
+def nested_list(payload: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
+    current: Any = payload
+    for key in keys:
+        if not isinstance(current, dict):
+            return []
+        current = current.get(key)
+    if not isinstance(current, list):
+        return []
+    return [item for item in current if isinstance(item, dict)]
+
+
+def jira_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return extract_adf_text(value).strip()
+    return str(value).strip()
+
+
+def extract_adf_text(node: Any) -> str:
+    if isinstance(node, str):
+        return node
+    if isinstance(node, list):
+        return " ".join(extract_adf_text(item) for item in node)
+    if not isinstance(node, dict):
+        return ""
+    parts: list[str] = []
+    if node.get("type") == "text" and node.get("text"):
+        parts.append(str(node["text"]))
+    content = node.get("content")
+    if isinstance(content, list):
+        parts.append(extract_adf_text(content))
+    return " ".join(part for part in parts if part)
+
+
+def parse_jira_datetime(value: Any) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        return datetime.now(UTC)
+    cleaned = value.strip()
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    if len(cleaned) > 5 and cleaned[-5] in {"+", "-"} and cleaned[-3] != ":":
+        cleaned = cleaned[:-2] + ":" + cleaned[-2:]
+    parsed = datetime.fromisoformat(cleaned)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def jira_user_name(user: Any) -> str | None:
+    if not isinstance(user, dict):
+        return None
+    return user.get("displayName") or user.get("name") or user.get("emailAddress")
+
+
+def is_meaningful_jira_change(item: dict[str, Any]) -> bool:
+    field = str(item.get("field") or "").strip().lower()
+    if not field:
+        return False
+    if field in {"status", "priority", "severity", "duedate", "due date", "attachment"}:
+        return True
+    return any(keyword in field for keyword in ("target", "dependency", "link", "blocked"))

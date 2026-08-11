@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
@@ -93,6 +93,8 @@ class DraftEmailRequest(BaseModel):
     cycle: str = Field(pattern=r"^\d{4}-\d{2}$")
     partner_id: uuid.UUID | None = None
     partner_ids: list[uuid.UUID] = Field(default_factory=list)
+    date_start: date | None = None
+    date_end: date | None = None
 
 
 class DraftEmailResponse(BaseModel):
@@ -102,3 +104,70 @@ class DraftEmailResponse(BaseModel):
     subject: str
     body: str
     update_count: int
+
+
+class PresenterAskRequest(BaseModel):
+    cycle: str = Field(pattern=r"^\d{4}-\d{2}$")
+    question: str = Field(min_length=1, max_length=1200)
+    partner_id: uuid.UUID | None = None
+    partner_ids: list[uuid.UUID] = Field(default_factory=list)
+    date_start: date | None = None
+    date_end: date | None = None
+
+
+class PresenterAskResponse(BaseModel):
+    answer: str
+    grounded: bool = True
+    model: str | None = None
+
+
+class PresenterExecutiveSummaryRequest(BaseModel):
+    cycle: str = Field(pattern=r"^\d{4}-\d{2}$")
+    partner_id: uuid.UUID | None = None
+    partner_ids: list[uuid.UUID] = Field(default_factory=list)
+    date_start: date | None = None
+    date_end: date | None = None
+
+
+class PresenterExecutiveSummaryResponse(BaseModel):
+    cycle: str
+    partner_id: uuid.UUID | None = None
+    partner_ids: list[uuid.UUID] = Field(default_factory=list)
+    bullets: list[str]
+    source_note: str | None = None
+    update_count: int
+    grounded: bool = True
+    model: str | None = None
+
+
+class PresenterDecisionBoardRequest(BaseModel):
+    cycle: str = Field(pattern=r"^\d{4}-\d{2}$")
+    partner_id: uuid.UUID | None = None
+    partner_ids: list[uuid.UUID] = Field(default_factory=list)
+    date_start: date | None = None
+    date_end: date | None = None
+
+
+class PresenterDecisionBoardSignal(BaseModel):
+    partner_id: uuid.UUID | None = None
+    partner_name: str | None = None
+    priority: str | None = None
+    title: str
+    action: str
+    rationale: str
+    owner: str | None = None
+    due_date: str | None = None
+    severity: str | None = None
+    source_label: str | None = None
+    source_url: str | None = None
+
+
+class PresenterDecisionBoardResponse(BaseModel):
+    cycle: str
+    partner_id: uuid.UUID | None = None
+    partner_ids: list[uuid.UUID] = Field(default_factory=list)
+    signals: list[PresenterDecisionBoardSignal]
+    source_note: str | None = None
+    update_count: int
+    grounded: bool = True
+    model: str | None = None

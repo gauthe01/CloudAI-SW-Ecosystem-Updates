@@ -10,7 +10,7 @@ export const viewOrder: AccountView[] = ["contributor", "presenter", "admin"];
 
 export const sectionLabels: Record<AccountView, string[]> = {
   contributor: ["Partner Metadata", "Draft Updates", "Approved Updates", "Connected Sources"],
-  presenter: ["Executive Summary", "Decision Board", "Partner Intelligence", "Draft Email"],
+  presenter: ["Partner Updates", "Executive Summary", "Decision Board", "Event Calendar"],
   admin: [
     "Admin Console",
     "Partners",
