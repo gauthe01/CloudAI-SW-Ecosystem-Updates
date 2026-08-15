@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.connected_source import ConnectedSource, ConnectedSourceStatus
 from app.db.models.partner import Partner, PartnerContributorAssignment, PartnerStatus
 from app.db.models.partner_update import PartnerUpdate, PartnerUpdateStatus
+from app.domains.contributor.metadata.service import parse_cycle_month
 from app.domains.contributor.partners.schemas import (
     ContributorDashboardContextResponse,
     ContributorDashboardTabCounts,
@@ -45,10 +46,11 @@ class ContributorPartnerService:
         *,
         partner_id: uuid.UUID,
         current_user: UserResponse,
+        cycle: str | None = None,
     ) -> ContributorDashboardContextResponse:
         partner = await self._get_assigned_active_partner(partner_id, current_user)
         active_cycle = datetime.now(UTC)
-        cycle_month = active_cycle.replace(day=1).date()
+        cycle_month = parse_cycle_month(cycle) if cycle else active_cycle.replace(day=1).date()
         pending_count = await self._count_updates(
             partner_id=partner_id,
             status=PartnerUpdateStatus.pending,
@@ -61,8 +63,8 @@ class ContributorPartnerService:
         )
         return ContributorDashboardContextResponse(
             partner=await self._partner_to_response(partner),
-            active_cycle=active_cycle.strftime("%Y-%m"),
-            active_cycle_label=active_cycle.strftime("%B %Y"),
+            active_cycle=cycle_month.strftime("%Y-%m"),
+            active_cycle_label=cycle_month.strftime("%B %Y"),
             default_tab="pending_updates",
             tab_counts=ContributorDashboardTabCounts(
                 pending_updates=pending_count,

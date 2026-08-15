@@ -10,6 +10,7 @@ import { PartnerNavSelect } from "@/components/navigation/PartnerNavSelect";
 import { PresenterPartnerNavSelect } from "@/components/navigation/PresenterPartnerNavSelect";
 import { SectionTabs } from "@/components/navigation/SectionTabs";
 import { AdminControlPlanePanel } from "@/features/admin/AdminControlPlanePanel";
+import { AdminEventsTopicsPanel } from "@/features/admin/AdminEventsTopicsPanel";
 import { AdminIntegrationsPanel } from "@/features/admin/AdminIntegrationsPanel";
 import { AdminPartnersPanel } from "@/features/admin/AdminPartnersPanel";
 import { AdminKnowledgeUploadPanel } from "@/features/admin/AdminKnowledgeUploadPanel";
@@ -231,6 +232,7 @@ export function AccountViewShell() {
   const isContributorView = activeView === "contributor";
   const isPresenterView = activeView === "presenter";
   const isAdminConsoleHome = activeView === "admin" && selectedSection === "Admin Console";
+  const isKnowledgeUploadAdmin = activeView === "admin" && selectedSection === "Knowledge Upload";
   const isContributorPartnerSelection =
     isContributorView && contributorPartners.length > 1 && !selectedContributorPartnerId;
   const contributorNavPartners = contributorPartners.map((partner) => ({
@@ -349,7 +351,7 @@ export function AccountViewShell() {
                 {adminHeaderAction}
               </div>
             ) : null}
-            {isPresenterView ? (
+            {isPresenterView || isKnowledgeUploadAdmin ? (
               <h2 id="workspace-content-title" className="visually-hidden">
                 {selectedSectionLabel}
               </h2>
@@ -457,6 +459,10 @@ function renderWorkspaceContent(
 
   if (activeView === "admin" && selectedSection === "Knowledge Upload") {
     return <AdminKnowledgeUploadPanel />;
+  }
+
+  if (activeView === "admin" && selectedSection === "Events/Topics") {
+    return <AdminEventsTopicsPanel />;
   }
 
   if (activeView === "admin" && selectedSection === "Global Integrations") {

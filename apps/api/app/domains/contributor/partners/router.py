@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.identity import RoleType
@@ -38,8 +38,10 @@ async def get_dashboard_context(
     partner_id: uuid.UUID,
     service: Annotated[ContributorPartnerService, Depends(get_contributor_partner_service)],
     current_user: Annotated[UserResponse, Depends(require_roles(RoleType.contributor))],
+    cycle: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}$")] = None,
 ) -> ContributorDashboardContextResponse:
     return await service.get_dashboard_context(
         partner_id=partner_id,
         current_user=current_user,
+        cycle=cycle,
     )

@@ -6,15 +6,16 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.partner import Partner, PartnerContributorAssignment, PartnerStatus
-from app.db.models.partner_update import PartnerUpdate, PartnerUpdateStatus
+from app.db.models.partner_update import PartnerUpdate, PartnerUpdateSourceType, PartnerUpdateStatus
 from app.domains.contributor.metadata.service import format_cycle_month, parse_cycle_month
+from app.domains.contributor.updates.rich_text import sanitize_update_summary_html
 from app.domains.contributor.updates.schemas import (
+    FileUpdateCreateRequest,
     ManualUpdateCreateRequest,
     PartnerUpdateCreatePayload,
     PartnerUpdateEditRequest,
     PartnerUpdateResponse,
 )
-from app.domains.contributor.updates.rich_text import sanitize_update_summary_html
 from app.domains.identity.schemas import UserResponse
 
 
@@ -96,6 +97,26 @@ class ContributorUpdateService:
             payload=PartnerUpdateCreatePayload(
                 title=payload.title,
                 summary=payload.summary,
+            ),
+            current_user=current_user,
+        )
+
+    async def create_file_update(
+        self,
+        *,
+        partner_id: uuid.UUID,
+        cycle: str,
+        payload: FileUpdateCreateRequest,
+        current_user: UserResponse,
+    ) -> PartnerUpdateResponse:
+        return await self.create_pending_update(
+            partner_id=partner_id,
+            cycle=cycle,
+            payload=PartnerUpdateCreatePayload(
+                title=payload.title,
+                summary=payload.summary,
+                source_type=PartnerUpdateSourceType.file,
+                source_label=payload.source_label,
             ),
             current_user=current_user,
         )

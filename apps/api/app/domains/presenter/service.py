@@ -3,6 +3,7 @@ import re
 import uuid
 from collections import Counter
 from datetime import date
+from html import unescape
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
@@ -17,6 +18,7 @@ from app.db.models.partner_metadata import (
     PartnerResourceLink,
 )
 from app.db.models.partner_update import PartnerUpdate, PartnerUpdateStatus
+from app.db.models.topic_update import TopicUpdate, TopicUpdateStatus
 from app.domains.contributor.metadata.service import format_cycle_month, parse_cycle_month
 from app.domains.presenter.schemas import (
     DecisionBoardItem,
@@ -95,7 +97,7 @@ class PresenterService:
             date_end=date_end,
         )
         scoped_partner_ids = normalize_partner_scope(partner_id=partner_id, partner_ids=partner_ids)
-        statement = (
+        partner_statement = (
             select(PartnerUpdate, Partner)
             .join(Partner, Partner.partner_id == PartnerUpdate.partner_id)
             .where(Partner.status == PartnerStatus.active.value)
@@ -110,11 +112,11 @@ class PresenterService:
             )
         )
         if scoped_partner_ids:
-            statement = statement.where(Partner.partner_id.in_(scoped_partner_ids))
+            partner_statement = partner_statement.where(Partner.partner_id.in_(scoped_partner_ids))
         cleaned_search = search.strip() if search else ""
         if cleaned_search:
             query = f"%{cleaned_search.lower()}%"
-            statement = statement.where(
+            partner_statement = partner_statement.where(
                 or_(
                     func.lower(Partner.name).like(query),
                     func.lower(PartnerUpdate.title).like(query),
@@ -122,8 +124,49 @@ class PresenterService:
                     func.lower(PartnerUpdate.source_label).like(query),
                 )
             )
-        result = await self.db.execute(statement)
-        return [self._update_to_response(update, partner) for update, partner in result.all()]
+        partner_result = await self.db.execute(partner_statement)
+        responses = [
+            self._update_to_response(update, partner) for update, partner in partner_result.all()
+        ]
+
+        if not scoped_partner_ids:
+            topic_statement = (
+                select(TopicUpdate)
+                .where(TopicUpdate.cycle_month >= start_month)
+                .where(TopicUpdate.cycle_month <= end_month)
+                .where(TopicUpdate.status == TopicUpdateStatus.approved.value)
+                .order_by(
+                    TopicUpdate.cycle_month.desc(),
+                    TopicUpdate.approved_at.desc().nullslast(),
+                    TopicUpdate.topic_label.asc(),
+                    TopicUpdate.updated_at.desc(),
+                )
+            )
+            if cleaned_search:
+                query = f"%{cleaned_search.lower()}%"
+                topic_statement = topic_statement.where(
+                    or_(
+                        func.lower(TopicUpdate.topic_label).like(query),
+                        func.lower(TopicUpdate.title).like(query),
+                        func.lower(TopicUpdate.summary).like(query),
+                        func.lower(TopicUpdate.source_label).like(query),
+                    )
+                )
+            topic_result = await self.db.execute(topic_statement)
+            responses.extend(
+                self._topic_update_to_response(topic_update)
+                for topic_update in topic_result.scalars().all()
+            )
+        return sorted(
+            responses,
+            key=lambda update: (
+                update.cycle,
+                update.approved_at.timestamp() if update.approved_at else 0.0,
+                update.partner_name,
+                update.title,
+            ),
+            reverse=True,
+        )
 
     async def get_partner_metadata(
         self,
@@ -217,7 +260,11 @@ class PresenterService:
             partner = await self._get_active_partner_or_404(partner_id)
             partner_name = partner.name
         subject = draft_email_subject(period_label=period_label, partner_name=partner_name)
-        body = draft_email_body(period_label=period_label, partner_name=partner_name, updates=updates)
+        body = draft_email_body(
+            period_label=period_label,
+            partner_name=partner_name,
+            updates=updates,
+        )
         return DraftEmailResponse(
             cycle=cycle,
             partner_id=partner_id if len(scoped_partner_ids) <= 1 else None,
@@ -548,7 +595,7 @@ class PresenterService:
                             "green_action": risk.green_action,
                             "severity": risk.severity,
                             "assigned_to": risk.assigned_to,
-                            "due_date": risk.due_date.isoformat() if risk.due_date else None,
+                            "due_date": risk.due_date,
                             "ramification": risk.ramification,
                         }
                         for risk in sorted(snapshot.risks, key=lambda item: item.sort_order)
@@ -619,6 +666,28 @@ class PresenterService:
             update_id=update.update_id,
             partner_id=partner.partner_id,
             partner_name=partner.name,
+            scope="partner",
+            topic_label=None,
+            cycle=format_cycle_month(update.cycle_month),
+            title=update.title,
+            summary=update.summary,
+            source_type=update.source_type,
+            source_label=update.source_label,
+            source_url=update.source_url,
+            approved_at=update.approved_at,
+            approved_by=update.approved_by,
+        )
+
+    def _topic_update_to_response(
+        self,
+        update: TopicUpdate,
+    ) -> PresenterUpdateResponse:
+        return PresenterUpdateResponse(
+            update_id=update.topic_update_id,
+            partner_id=None,
+            partner_name=update.topic_label,
+            scope="topic",
+            topic_label=update.topic_label,
             cycle=format_cycle_month(update.cycle_month),
             title=update.title,
             summary=update.summary,
@@ -654,7 +723,7 @@ class PresenterService:
                     green_action=risk.green_action,
                     severity=risk.severity,
                     assigned_to=risk.assigned_to,
-                    due_date=risk.due_date.isoformat() if risk.due_date else None,
+                    due_date=risk.due_date,
                     ramification=risk.ramification,
                 )
                 for risk in risks
@@ -765,12 +834,45 @@ def draft_email_body(
     ]
     for index, update in enumerate(updates[:12], start=1):
         lines.append(f"{index}. {update.partner_name} - {update.title}")
-        lines.append(f"   {update.summary}")
+        summary = html_to_email_text(update.summary)
+        if summary:
+            lines.extend(f"   {line}" for line in summary.splitlines())
     if len(updates) > 12:
         lines.append("")
         lines.append(f"{len(updates) - 12} additional approved update(s) are available.")
     lines.extend(["", "Regards,"])
     return "\n".join(lines)
+
+
+def html_to_email_text(value: str) -> str:
+    text = normalize_link_html_for_email(value or "")
+    text = re.sub(r"<\s*br\s*/?\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</\s*(p|div|ul|ol)\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*li\b[^>]*>", "\n- ", text, flags=re.IGNORECASE)
+    text = re.sub(r"</\s*li\s*>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = unescape(text)
+    text = text.replace("\xa0", " ")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
+
+
+def normalize_link_html_for_email(value: str) -> str:
+    pattern = re.compile(
+        r"<a\b[^>]*\bhref=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        href = unescape(re.sub(r"<[^>]+>", "", match.group(1))).strip()
+        label = unescape(re.sub(r"<[^>]+>", "", match.group(2))).strip()
+        if not label:
+            return href
+        if href and href != label:
+            return f"{label} ({href})"
+        return label
+
+    return pattern.sub(replace, value)
 
 
 def presenter_ask_system_prompt() -> str:
@@ -813,8 +915,10 @@ def build_presenter_ask_payload(
         "approved_updates": [
             {
                 "update_id": str(update.update_id),
-                "partner_id": str(update.partner_id),
+                "partner_id": str(update.partner_id) if update.partner_id else None,
                 "partner_name": update.partner_name,
+                "scope": update.scope,
+                "topic_label": update.topic_label,
                 "cycle": update.cycle,
                 "title": update.title,
                 "summary": strip_html(update.summary),
@@ -888,8 +992,10 @@ def build_executive_summary_payload(
         "approved_updates": [
             {
                 "update_id": str(update.update_id),
-                "partner_id": str(update.partner_id),
+                "partner_id": str(update.partner_id) if update.partner_id else None,
                 "partner_name": update.partner_name,
+                "scope": update.scope,
+                "topic_label": update.topic_label,
                 "cycle": update.cycle,
                 "title": update.title,
                 "summary": strip_html(update.summary),
@@ -975,8 +1081,10 @@ def build_decision_board_payload(
         "approved_updates": [
             {
                 "update_id": str(update.update_id),
-                "partner_id": str(update.partner_id),
+                "partner_id": str(update.partner_id) if update.partner_id else None,
                 "partner_name": update.partner_name,
+                "scope": update.scope,
+                "topic_label": update.topic_label,
                 "cycle": update.cycle,
                 "title": update.title,
                 "summary": strip_html(update.summary),

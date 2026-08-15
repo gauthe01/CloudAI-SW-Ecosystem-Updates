@@ -84,19 +84,24 @@ export function ContributorDashboardShell({
 
   const activePartner = context?.partner ?? partner;
   const activeCycleLabel = formatCycleLabel(cycle) ?? context?.active_cycle_label ?? cycle;
-  const tabCounts = context?.tab_counts;
+  const tabCounts = context?.active_cycle === cycle ? context.tab_counts : undefined;
 
-  function refreshDashboardContext() {
-    getContributorDashboardContext(partner.partner_id)
+  function refreshDashboardContext(selectedCycle = cycle) {
+    getContributorDashboardContext(partner.partner_id, selectedCycle || undefined)
       .then((nextContext) => setContext(nextContext))
       .catch(() => undefined);
+  }
+
+  function handleCycleChange(nextCycle: string) {
+    setCycle(nextCycle);
+    refreshDashboardContext(nextCycle);
   }
 
   function handleManualUpdateCreated() {
     setActiveTab("pending_updates");
     selectTab("pending_updates", setActiveTab);
     setUpdatesReloadKey((current) => current + 1);
-    refreshDashboardContext();
+    refreshDashboardContext(cycle);
   }
 
   if (!loading && !error && addUpdateOpen && cycle) {
@@ -139,7 +144,7 @@ export function ContributorDashboardShell({
             </button>
           ) : null}
 
-          <CyclePicker cycle={cycle} disabled={!cycle} onChange={setCycle} />
+          <CyclePicker cycle={cycle} disabled={!cycle} onChange={handleCycleChange} />
 
           <button
             className="contributor-add-update-action"
@@ -185,7 +190,7 @@ export function ContributorDashboardShell({
             activeCycleLabel={activeCycleLabel}
             search={search}
             reloadKey={updatesReloadKey}
-            onLifecycleChange={refreshDashboardContext}
+            onLifecycleChange={() => refreshDashboardContext(cycle)}
           />
         </>
       ) : null}

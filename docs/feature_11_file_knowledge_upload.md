@@ -218,6 +218,60 @@ Verified:
   - verified contributor partner upload list
   - verified admin upload list
   - cleaned temporary DB records
+
+## Feature 24 Extension - Guided Admin Knowledge Extraction
+
+Added a Gold-inspired admin review workflow on top of the upload foundation:
+
+- Admin Knowledge Upload now uses a three-step flow:
+  - Upload
+  - Confirm
+  - Results
+- Admin uploads are parsed into review candidates before anything reaches
+  contributor pending updates.
+- Text, CSV, JSON, Markdown, log, DOCX, PPTX, and XLSX files are handled by a
+  deterministic parser layer.
+- Candidate extraction preserves source evidence, section/slide/row labels,
+  detected links, partner mapping, and cycle month.
+- Candidates without partner or cycle mapping remain blocked from staging until
+  the admin resolves the missing mapping.
+- Admins can edit candidate text, map partner/month, dismiss candidates, and
+  stage selected candidates.
+- Staged candidates become normal pending `partner_updates` with `source_type`
+  set to `file` and a durable `knowledge-upload:{candidate_id}` source key.
+- The rulebook `admin_knowledge_upload` defines the extraction constraints:
+  grounded facts only, preserve quantitative info and links, no semicolon-based
+  merging, and no repeated prior-month context.
+
+Added migration:
+
+- `0015_knowledge_upload_candidates`
+
+Added backend pieces:
+
+- `knowledge_upload_candidates`
+- `apps/api/app/domains/uploads/analyzer.py`
+- admin detail, candidate update/dismiss, and staging routes
+
+Added client behavior:
+
+- Gold-inspired wizard visual treatment
+- candidate review cards
+- source evidence disclosure
+- staged results view
+
+Additional verification:
+
+- Focused Ruff checks passed for touched backend files.
+- Python compile check passed.
+- Web TypeScript check passed.
+- Web production build passed.
+- Backend service test covers candidate extraction and staging.
+- Docker local API/web rebuilt and running on `localhost:3000`.
+- Alembic upgraded local Docker database through
+  `0015_knowledge_upload_candidates`.
+- Browser smoke test uploaded a temporary SAP HANA Cloud text file, extracted
+  two candidates, staged two pending updates, then cleaned the synthetic data.
 - Browser UI smoke test:
   - logged in as Bhumik Patel
   - selected a temporary assigned partner

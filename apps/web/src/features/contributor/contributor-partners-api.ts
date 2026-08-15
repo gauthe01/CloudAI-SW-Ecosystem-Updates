@@ -39,9 +39,15 @@ export async function listContributorPartners(): Promise<ContributorPartner[]> {
 
 export async function getContributorDashboardContext(
   partnerId: string,
+  cycle?: string,
 ): Promise<ContributorDashboardContext> {
+  const params = new URLSearchParams();
+  if (cycle) {
+    params.set("cycle", cycle);
+  }
+  const query = params.toString();
   const response = await fetch(
-    `${apiBaseUrl}/api/contributor/partners/${partnerId}/dashboard-context`,
+    `${apiBaseUrl}/api/contributor/partners/${partnerId}/dashboard-context${query ? `?${query}` : ""}`,
     {
       credentials: "include",
       cache: "no-store",

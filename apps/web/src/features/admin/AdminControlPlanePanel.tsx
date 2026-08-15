@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { listAdminConnectedSources } from "@/features/admin/admin-connected-sources-api";
 import { listAdminIntegrations } from "@/features/admin/admin-integrations-api";
 import { listAdminPartners } from "@/features/admin/admin-partners-api";
+import { listAdminTopicUpdates } from "@/features/admin/admin-topic-updates-api";
 import {
   listAccountAccessRequests,
   listAdminUsers,
@@ -22,6 +23,7 @@ type AdminConsoleStats = {
   enabledIntegrations: number | null;
   integrations: number | null;
   pendingSourceApprovals: number | null;
+  topicUpdates: number | null;
 };
 
 const emptyStats: AdminConsoleStats = {
@@ -31,6 +33,7 @@ const emptyStats: AdminConsoleStats = {
   enabledIntegrations: null,
   integrations: null,
   pendingSourceApprovals: null,
+  topicUpdates: null,
 };
 
 export function AdminControlPlanePanel({ onSelectModule }: AdminControlPlanePanelProps) {
@@ -46,8 +49,9 @@ export function AdminControlPlanePanel({ onSelectModule }: AdminControlPlanePane
       listAccountAccessRequests(),
       listAdminIntegrations(),
       listAdminConnectedSources(),
+      listAdminTopicUpdates(),
     ])
-      .then(([partners, users, accessRequests, integrations, connectedSources]) => {
+      .then(([partners, users, accessRequests, integrations, connectedSources, topicUpdates]) => {
         if (!mounted) {
           return;
         }
@@ -69,6 +73,8 @@ export function AdminControlPlanePanel({ onSelectModule }: AdminControlPlanePane
               ? connectedSources.value.filter((source) => source.review_bucket === "needs_review")
                   .length
               : null,
+          topicUpdates:
+            topicUpdates.status === "fulfilled" ? topicUpdates.value.total_count : null,
         });
       })
       .finally(() => {
@@ -133,6 +139,19 @@ export function AdminControlPlanePanel({ onSelectModule }: AdminControlPlanePane
               }`,
         tone: "blue",
         iconLabel: "S",
+      },
+      {
+        id: "Events/Topics",
+        title: adminSectionDisplayLabels["Events/Topics"],
+        description: "Review global event and topic knowledge",
+        metric:
+          stats.topicUpdates === null
+            ? "Open topics"
+            : `${stats.topicUpdates} approved update${
+                stats.topicUpdates === 1 ? "" : "s"
+              }`,
+        tone: "blue",
+        iconLabel: "E",
       },
       {
         id: "Knowledge Upload",

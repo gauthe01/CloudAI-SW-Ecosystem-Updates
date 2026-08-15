@@ -21,8 +21,10 @@ class PresenterPartnerListResponse(BaseModel):
 
 class PresenterUpdateResponse(BaseModel):
     update_id: uuid.UUID
-    partner_id: uuid.UUID
+    partner_id: uuid.UUID | None
     partner_name: str
+    scope: str = "partner"
+    topic_label: str | None = None
     cycle: str
     title: str
     summary: str

@@ -10,8 +10,10 @@ export type PresenterPartner = {
 
 export type PresenterUpdate = {
   update_id: string;
-  partner_id: string;
+  partner_id: string | null;
   partner_name: string;
+  scope: "partner" | "topic" | string;
+  topic_label: string | null;
   cycle: string;
   title: string;
   summary: string;

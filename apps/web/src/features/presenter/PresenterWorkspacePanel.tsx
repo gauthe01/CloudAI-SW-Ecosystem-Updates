@@ -982,7 +982,7 @@ function PresenterUpdateSummary({ update }: { update: PresenterUpdate }) {
     return (
       <div
         className="presenter-feed-summary"
-        dangerouslySetInnerHTML={{ __html: update.summary }}
+        dangerouslySetInnerHTML={{ __html: normalizePresenterSummaryHtml(update.summary) }}
       />
     );
   }
@@ -1072,7 +1072,7 @@ function PresenterMetaTextCard({
         {items.length ? (
           <ul className="presenter-meta-bullets">
             {items.map((item) => (
-              <li key={item}>{item}</li>
+              <li key={item}>{renderHighlightedText(item, "")}</li>
             ))}
           </ul>
         ) : (
@@ -1503,13 +1503,17 @@ function groupUpdatesByPartner(updates: PresenterUpdate[], partners: PresenterPa
   const partnerOrder = new Map(partners.map((partner, index) => [partner.partner_id, index]));
   const groups = new Map<string, { partnerId: string; partnerName: string; items: PresenterUpdate[] }>();
   for (const update of updates) {
-    const existing = groups.get(update.partner_id);
+    const topicLabel = update.topic_label || update.partner_name || "Events/Topics";
+    const groupId = update.scope === "topic" || !update.partner_id ? `topic:${topicLabel}` : update.partner_id;
+    const groupName =
+      update.scope === "topic" || !update.partner_id ? topicLabel : update.partner_name;
+    const existing = groups.get(groupId);
     if (existing) {
       existing.items.push(update);
     } else {
-      groups.set(update.partner_id, {
-        partnerId: update.partner_id,
-        partnerName: update.partner_name,
+      groups.set(groupId, {
+        partnerId: groupId,
+        partnerName: groupName,
         items: [update],
       });
     }
@@ -1525,10 +1529,30 @@ function groupUpdatesByPartner(updates: PresenterUpdate[], partners: PresenterPa
 }
 
 function splitMetadataValue(value: string | null | undefined): string[] {
-  return (value ?? "")
-    .split(/\n|•/)
-    .map((item) => item.replace(/^\s*[-*]\s+/, "").trim())
+  const text = value ?? "";
+  if (!text.trim()) {
+    return [];
+  }
+
+  const blocks = text
+    .split(/\n{2,}|•/)
+    .map((item) => cleanMetadataListItem(item))
     .filter(Boolean);
+  if (blocks.length > 1) {
+    return blocks;
+  }
+
+  const lines = text.split("\n");
+  const hasIndentedContinuation = lines.some((line) => /^\s+[-*•\d.]/.test(line));
+  if (!hasIndentedContinuation && lines.length > 1) {
+    return lines.map((item) => cleanMetadataListItem(item)).filter(Boolean);
+  }
+
+  return [cleanMetadataListItem(text)].filter(Boolean);
+}
+
+function cleanMetadataListItem(value: string): string {
+  return value.replace(/^\s*[-*]\s+/, "").trim();
 }
 
 function filterSummaryBullets(bullets: string[], searchTerm: string): string[] {
@@ -1582,7 +1606,7 @@ function groupDecisionBoardSignals(signals: PresenterDecisionBoardSignal[]) {
 
 function renderHighlightedText(text: string, searchTerm: string): Array<string | ReactElement> {
   const parts: Array<string | ReactElement> = [];
-  const linkPattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+  const linkPattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+|mailto:[^)\s]+|\/[^)\s]*|#[^)\s]+)\)/g;
   let lastIndex = 0;
   let match = linkPattern.exec(text);
   while (match) {
@@ -1634,7 +1658,7 @@ function renderAskAiText(text: string): ReactElement[] {
 
 function renderAskAiInlineLinks(text: string): Array<string | ReactElement> {
   const parts: Array<string | ReactElement> = [];
-  const linkPattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+  const linkPattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+|mailto:[^)\s]+|\/[^)\s]*|#[^)\s]+)\)/g;
   let lastIndex = 0;
   let match = linkPattern.exec(text);
   while (match) {
@@ -1656,7 +1680,20 @@ function renderAskAiInlineLinks(text: string): Array<string | ReactElement> {
 }
 
 function looksLikeAllowedUpdateHtml(value: string): boolean {
-  return /<\/?(a|strong|b|em|i|u|ol|ul|li)\b/i.test(value);
+  return /<\/?(a|strong|b|em|i|u|ol|ul|li|p|br|div)\b/i.test(value);
+}
+
+function normalizePresenterSummaryHtml(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed
+    .replace(/<\/p>\s*<p\b[^>]*>/gi, "<br>")
+    .replace(/^<p\b[^>]*>/i, "")
+    .replace(/<\/p>$/i, "")
+    .replace(/<p\b[^>]*>/gi, "")
+    .replace(/<\/p>/gi, "<br>");
 }
 
 function getPartnerInitials(name: string) {

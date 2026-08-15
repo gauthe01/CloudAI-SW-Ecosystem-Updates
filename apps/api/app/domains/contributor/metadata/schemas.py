@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime
+from datetime import datetime
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
@@ -11,13 +11,19 @@ class PartnerMetadataRiskPayload(BaseModel):
     green_action: str | None = Field(default=None, max_length=4000)
     severity: str | None = Field(default=None, max_length=64)
     assigned_to: str | None = Field(default=None, max_length=240)
-    due_date: date | None = None
+    due_date: str | None = Field(default=None, max_length=240)
     ramification: str | None = Field(default=None, max_length=4000)
 
     @field_validator("description")
     @classmethod
     def description_must_be_clean(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("due_date")
+    @classmethod
+    def due_date_must_be_clean(cls, value: str | None) -> str | None:
+        cleaned = value.strip() if value else None
+        return cleaned or None
 
 
 class PartnerResourceLinkPayload(BaseModel):
@@ -33,7 +39,7 @@ class PartnerResourceLinkPayload(BaseModel):
 
 class PartnerMetadataSaveRequest(BaseModel):
     status: PartnerHealthStatus | None = None
-    why_this_partner: str = Field(min_length=1, max_length=12000)
+    why_this_partner: str | None = Field(default=None, max_length=12000)
     business_priority: str = Field(min_length=1, max_length=12000)
     highlights_status: str = Field(min_length=1, max_length=12000)
     goals: str = Field(min_length=1, max_length=12000)
@@ -42,7 +48,6 @@ class PartnerMetadataSaveRequest(BaseModel):
     resources: list[PartnerResourceLinkPayload] = Field(default_factory=list, max_length=100)
 
     @field_validator(
-        "why_this_partner",
         "business_priority",
         "highlights_status",
         "goals",
@@ -61,7 +66,7 @@ class PartnerMetadataRiskResponse(BaseModel):
     green_action: str | None
     severity: str | None
     assigned_to: str | None
-    due_date: date | None
+    due_date: str | None
     ramification: str | None
 
 

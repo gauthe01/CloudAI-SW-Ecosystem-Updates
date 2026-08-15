@@ -83,6 +83,7 @@ async def test_contributor_metadata_save_load_and_overwrite_latest_snapshot() ->
                         green_action="Confirm owner",
                         severity="amber",
                         assigned_to="Bhumik",
+                        due_date="Q1-Q2 FY27",
                         ramification="Could delay update automation",
                     )
                 ],
@@ -101,6 +102,7 @@ async def test_contributor_metadata_save_load_and_overwrite_latest_snapshot() ->
         assert [risk.description for risk in saved_metadata.risks] == [
             "Delayed integration access"
         ]
+        assert saved_metadata.risks[0].due_date == "Q1-Q2 FY27"
         assert [resource.title for resource in saved_metadata.resources] == ["AWS Jira"]
 
         overwritten_metadata = await service.save_metadata(
@@ -108,7 +110,7 @@ async def test_contributor_metadata_save_load_and_overwrite_latest_snapshot() ->
             cycle="2026-08",
             payload=PartnerMetadataSaveRequest(
                 status="amber",
-                why_this_partner="Strategic cloud ecosystem priority remains valid.",
+                why_this_partner=None,
                 business_priority="Medium",
                 highlights_status="Needs attention.",
                 goals="Close monthly partner risks.",
@@ -130,17 +132,26 @@ async def test_contributor_metadata_save_load_and_overwrite_latest_snapshot() ->
 
         assert overwritten_metadata.metadata_id == saved_metadata.metadata_id
         assert overwritten_metadata.status == "amber"
-        assert overwritten_metadata.why_this_partner == "Strategic cloud ecosystem priority remains valid."
+        assert overwritten_metadata.why_this_partner is None
         assert [risk.description for risk in overwritten_metadata.risks] == ["New monthly risk"]
         assert [resource.title for resource in overwritten_metadata.resources] == [
             "AWS SharePoint"
         ]
 
+        optional_why_payload = PartnerMetadataSaveRequest(
+            status="green",
+            why_this_partner=" ",
+            business_priority="High",
+            highlights_status="Healthy engagement.",
+            goals="Land monthly partner updates.",
+        )
+        assert optional_why_payload.why_this_partner == " "
+
         with pytest.raises(ValidationError):
             PartnerMetadataSaveRequest(
                 status="green",
-                why_this_partner=" ",
-                business_priority="High",
+                why_this_partner="Optional context.",
+                business_priority=" ",
                 highlights_status="Healthy engagement.",
                 goals="Land monthly partner updates.",
             )

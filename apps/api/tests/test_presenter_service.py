@@ -14,6 +14,7 @@ from app.db.models.partner_metadata import (
     ResourceLinkSourceKind,
 )
 from app.db.models.partner_update import PartnerUpdate, PartnerUpdateStatus
+from app.db.models.topic_update import TopicUpdate, TopicUpdateStatus
 from app.db.session import get_session_factory
 from app.domains.presenter.service import PresenterService
 
@@ -23,6 +24,9 @@ async def test_presenter_reads_approved_updates_across_unassigned_partners() -> 
     presenter_email = f"presenter-{uuid.uuid4()}@example.com"
     partner_a_name = f"Presenter AWS {uuid.uuid4()}"
     partner_b_name = f"Presenter Uber {uuid.uuid4()}"
+    topic_label = f"Presenter Marketing {uuid.uuid4()}"
+    cycle = "2031-08"
+    cycle_month = date(2031, 8, 1)
 
     async with get_session_factory()() as session:
         await cleanup_test_records(session, [partner_a_name, partner_b_name], [presenter_email])
@@ -31,40 +35,57 @@ async def test_presenter_reads_approved_updates_across_unassigned_partners() -> 
             presenter_email=presenter_email,
             partner_a_name=partner_a_name,
             partner_b_name=partner_b_name,
+            topic_label=topic_label,
+            cycle_month=cycle_month,
         )
 
         service = PresenterService(session)
-        partners = await service.list_partners(cycle="2026-08")
+        partners = await service.list_partners(cycle=cycle)
         partner_names = {partner.name for partner in partners}
         assert {partner_a_name, partner_b_name}.issubset(partner_names)
 
-        all_updates = await service.list_approved_updates(cycle="2026-08")
-        assert {update.partner_name for update in all_updates} == {
+        all_updates = await service.list_approved_updates(cycle=cycle)
+        assert {
             partner_a_name,
             partner_b_name,
-        }
+            topic_label,
+        }.issubset({update.partner_name for update in all_updates})
+        assert topic_label in [
+            update.partner_name for update in all_updates if update.scope == "topic"
+        ]
         assert all(update.source_url for update in all_updates)
 
         filtered_updates = await service.list_approved_updates(
-            cycle="2026-08",
+            cycle=cycle,
             partner_id=partner_a.partner_id,
         )
         assert [update.partner_name for update in filtered_updates] == [partner_a_name]
 
-        searched_updates = await service.list_approved_updates(cycle="2026-08", search="decision")
-        assert [update.partner_name for update in searched_updates] == [partner_a_name]
+        searched_updates = await service.list_approved_updates(cycle=cycle, search="decision")
+        assert partner_a_name in [update.partner_name for update in searched_updates]
 
-        analysis = await service.get_analysis(cycle="2026-08")
-        assert analysis.update_count == 2
+        analysis = await service.get_analysis(cycle=cycle)
+        assert analysis.update_count == 3
         assert analysis.partner_count >= 2
         assert analysis.source_mix["jira"] == 1
+        assert analysis.source_mix["file"] == 1
         assert analysis.decision_board
-        assert analysis.decision_board[0].partner_name == partner_a_name
+        assert any(item.partner_name == partner_a_name for item in analysis.decision_board)
 
-        email = await service.draft_email(cycle="2026-08", partner_id=partner_a.partner_id)
-        assert email.subject == f"{partner_a_name} Monthly Update - 2026-08"
+        email = await service.draft_email(cycle=cycle, partner_id=partner_a.partner_id)
+        assert email.subject == f"{partner_a_name} Monthly Update - {cycle}"
         assert "Release decision needed" in email.body
         assert partner_b_name not in email.body
+        assert topic_label not in email.body
+
+        all_partner_email = await service.draft_email(cycle=cycle)
+        assert f"{topic_label} - Cloud Marketing Initiatives Tracked here" in all_partner_email.body
+        assert "<p>" not in all_partner_email.body
+        assert "<a href=" not in all_partner_email.body
+        assert (
+            "Cloud Marketing Initiatives Tracked here (https://example.com/marketing)"
+            in all_partner_email.body
+        )
 
         await cleanup_test_records(session, [partner_a_name, partner_b_name], [presenter_email])
         await session.commit()
@@ -83,6 +104,7 @@ async def test_presenter_metadata_is_read_only_for_single_partner() -> None:
             presenter_email=presenter_email,
             partner_a_name=partner_a_name,
             partner_b_name=partner_b_name,
+            topic_label=f"Presenter Metadata Topic {uuid.uuid4()}",
         )
 
         service = PresenterService(session)
@@ -117,6 +139,8 @@ async def create_presenter_fixture(
     presenter_email: str,
     partner_a_name: str,
     partner_b_name: str,
+    topic_label: str,
+    cycle_month: date = date(2026, 8, 1),
 ) -> tuple[User, Partner, Partner]:
     presenter = User(email=presenter_email, display_name="Presenter User")
     presenter.role_assignments = [UserRoleAssignment(role_type=RoleType.presenter)]
@@ -138,7 +162,7 @@ async def create_presenter_fixture(
         [
             PartnerUpdate(
                 partner_id=partner_a.partner_id,
-                cycle_month=date(2026, 8, 1),
+                cycle_month=cycle_month,
                 title="Release decision needed",
                 summary="Partner release validation needs a decision this month.",
                 source_type="jira",
@@ -152,7 +176,7 @@ async def create_presenter_fixture(
             ),
             PartnerUpdate(
                 partner_id=partner_b.partner_id,
-                cycle_month=date(2026, 8, 1),
+                cycle_month=cycle_month,
                 title="Slack milestone update",
                 summary="Partner milestone remains on track.",
                 source_type="slack",
@@ -164,9 +188,27 @@ async def create_presenter_fixture(
                 created_at=now,
                 updated_at=now,
             ),
+            TopicUpdate(
+                topic_label=topic_label,
+                cycle_month=cycle_month,
+                title="Cloud Marketing Initiatives Tracked here",
+                summary=(
+                    '<p><a href="https://example.com/marketing" target="_blank" '
+                    'rel="noopener noreferrer">Cloud Marketing Initiatives Tracked here</a></p>'
+                ),
+                source_type="file",
+                source_label="Monthly report",
+                source_url="https://example.com/marketing",
+                status=TopicUpdateStatus.approved.value,
+                approved_by=presenter.user_id,
+                approved_at=now,
+                created_by=presenter.user_id,
+                created_at=now,
+                updated_at=now,
+            ),
             PartnerUpdate(
                 partner_id=partner_a.partner_id,
-                cycle_month=date(2026, 8, 1),
+                cycle_month=cycle_month,
                 title="Unapproved draft",
                 summary="This should not appear to presenters.",
                 source_type="manual",
@@ -179,7 +221,7 @@ async def create_presenter_fixture(
 
     snapshot = PartnerMetadataSnapshot(
         partner_id=partner_a.partner_id,
-        cycle_month=date(2026, 8, 1),
+        cycle_month=cycle_month,
         status="amber",
         highlights_status="Release validation needs attention.",
         business_priority="High",
@@ -250,6 +292,9 @@ async def cleanup_test_records(
         delete(PartnerMetadataSnapshot).where(PartnerMetadataSnapshot.partner_id.in_(partner_ids))
     )
     await session.execute(delete(PartnerUpdate).where(PartnerUpdate.partner_id.in_(partner_ids)))
+    await session.execute(
+        delete(TopicUpdate).where(TopicUpdate.created_by.in_(select_user_ids(emails)))
+    )
     await session.execute(
         delete(PartnerContributorAssignment).where(
             PartnerContributorAssignment.partner_id.in_(partner_ids)

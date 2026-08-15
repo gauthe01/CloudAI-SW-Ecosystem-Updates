@@ -2,7 +2,6 @@ from html import escape
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
-
 ALLOWED_INLINE_TAGS = {"b", "strong", "i", "em", "u"}
 ALLOWED_BLOCK_TAGS = {"ol", "ul", "li", "br"}
 ALLOWED_TAGS = ALLOWED_INLINE_TAGS | ALLOWED_BLOCK_TAGS | {"a"}

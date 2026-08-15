@@ -1,6 +1,13 @@
 "use client";
 
-import { type FormEvent, type TextareaHTMLAttributes, useEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type TextareaHTMLAttributes,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { GlobalLoader } from "@/components/foundation/GlobalLoader";
 import {
@@ -22,23 +29,42 @@ type ContributorPartnerMetadataPanelProps = {
 type MetadataFormState = {
   status: PartnerHealthStatus | "";
   why_this_partner: string;
-  business_priority: string;
-  highlights_status: string;
-  goals: string;
+  business_priority: string[];
+  highlights_status: string[];
+  goals: string[];
   execution_timeline: EditableTimelineRow[];
   risks: EditableRisk[];
   resources: EditableResource[];
 };
 
 type RequiredMetadataField =
-  | "why_this_partner"
   | "business_priority"
   | "highlights_status"
   | "goals";
 
+type MetadataListField = RequiredMetadataField;
+
 type MetadataToast = {
   message: string;
   tone: "success" | "error";
+};
+
+type MetadataLinkDialogState = {
+  field: MetadataListField;
+  index: number;
+  selectionStart: number;
+  selectionEnd: number;
+  text: string;
+  url: string;
+  error: string | null;
+};
+
+type MetadataListSelection = {
+  field: MetadataListField;
+  index: number;
+  selectionStart: number;
+  selectionEnd: number;
+  selectedText: string;
 };
 
 type EditableTimelineRow = {
@@ -75,6 +101,8 @@ export function ContributorPartnerMetadataPanel({
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<MetadataToast | null>(null);
   const [missingRequiredFields, setMissingRequiredFields] = useState<RequiredMetadataField[]>([]);
+  const [linkDialog, setLinkDialog] = useState<MetadataLinkDialogState | null>(null);
+  const [listSelection, setListSelection] = useState<MetadataListSelection | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -182,9 +210,9 @@ export function ContributorPartnerMetadataPanel({
     return () => window.clearTimeout(timeoutId);
   }, [toast]);
 
-  function updateField(field: keyof MetadataFormState, value: string) {
+  function updateField<K extends keyof MetadataFormState>(field: K, value: MetadataFormState[K]) {
     setForm((current) => ({ ...current, [field]: value }));
-    if (isRequiredMetadataField(field) && hasRequiredText(value)) {
+    if (isRequiredMetadataField(field) && hasRequiredRows(value as string[])) {
       setMissingRequiredFields((current) => current.filter((item) => item !== field));
     }
   }
@@ -234,26 +262,88 @@ export function ContributorPartnerMetadataPanel({
   }
 
   function updateListField(
-    field: "business_priority" | "highlights_status" | "goals",
+    field: MetadataListField,
     index: number,
     value: string,
   ) {
-    const rows = listFieldRows(form[field]);
+    const rows = [...form[field]];
     rows[index] = value;
-    updateField(field, rows.join("\n"));
+    updateField(field, rows);
   }
 
-  function addListFieldRow(field: "business_priority" | "highlights_status" | "goals") {
-    updateField(field, [...listFieldRows(form[field]), ""].join("\n"));
+  function addListFieldRow(field: MetadataListField) {
+    updateField(field, [...form[field], ""]);
   }
 
   function removeListFieldRow(
-    field: "business_priority" | "highlights_status" | "goals",
+    field: MetadataListField,
     index: number,
   ) {
-    const rows = listFieldRows(form[field]);
+    const rows = form[field];
     const nextRows = rows.length > 1 ? rows.filter((_, rowIndex) => rowIndex !== index) : [""];
-    updateField(field, nextRows.join("\n"));
+    updateField(field, nextRows);
+  }
+
+  function captureListSelection(
+    field: MetadataListField,
+    index: number,
+    textarea: HTMLTextAreaElement,
+  ) {
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    setListSelection({
+      field,
+      index,
+      selectionStart,
+      selectionEnd,
+      selectedText: textarea.value.slice(selectionStart, selectionEnd),
+    });
+  }
+
+  function openLinkDialog(field: MetadataListField, index: number, row: string) {
+    const activeSelection =
+      listSelection?.field === field && listSelection.index === index ? listSelection : null;
+    const selectionStart = activeSelection?.selectionStart ?? row.length;
+    const selectionEnd = activeSelection?.selectionEnd ?? row.length;
+    setLinkDialog({
+      field,
+      index,
+      selectionStart,
+      selectionEnd,
+      text: activeSelection?.selectedText.trim() ?? "",
+      url: "",
+      error: null,
+    });
+  }
+
+  function updateLinkDialog(updates: Partial<Pick<MetadataLinkDialogState, "text" | "url">>) {
+    setLinkDialog((current) => (current ? { ...current, ...updates, error: null } : current));
+  }
+
+  function applyLinkDialog() {
+    if (!linkDialog) {
+      return;
+    }
+
+    const href = normalizeHref(linkDialog.url);
+    const text = linkDialog.text.trim();
+    if (!text || !href) {
+      setLinkDialog({
+        ...linkDialog,
+        error: !text ? "Link text cannot be empty." : "Enter a valid URL or file path.",
+      });
+      return;
+    }
+
+    const rows = [...form[linkDialog.field]];
+    const row = rows[linkDialog.index] ?? "";
+    const selectionStart = clamp(linkDialog.selectionStart, 0, row.length);
+    const selectionEnd = clamp(linkDialog.selectionEnd, selectionStart, row.length);
+    rows[linkDialog.index] = `${row.slice(0, selectionStart)}[${escapeMarkdownLinkText(
+      text,
+    )}](${href})${row.slice(selectionEnd)}`;
+    updateField(linkDialog.field, rows);
+    setLinkDialog(null);
   }
 
   function addRisk() {
@@ -343,58 +433,67 @@ export function ContributorPartnerMetadataPanel({
         </div>
       </section>
 
-      <section
-        className={
-          isMissingRequiredField("why_this_partner")
-            ? "metadata-card metadata-required-card invalid"
-            : "metadata-card metadata-required-card"
-        }
-      >
+      <section className="metadata-card">
         <div className="metadata-card-head">
           <span>Why this partner</span>
-          <span className="metadata-required-badge">Required</span>
         </div>
         <div className="metadata-card-body">
           <AutoGrowTextarea
-            className={
-              isMissingRequiredField("why_this_partner")
-                ? "metadata-textarea metadata-textarea-large invalid"
-                : "metadata-textarea metadata-textarea-large"
-            }
+            className="metadata-textarea metadata-textarea-large"
             value={form.why_this_partner}
             onChange={(event) => updateField("why_this_partner", event.target.value)}
             maxLength={2000}
-            aria-invalid={isMissingRequiredField("why_this_partner")}
           />
         </div>
       </section>
 
       <div className="metadata-grid">
         <MetadataListCard
+          field="business_priority"
           label="Business priority"
           required
           invalid={isMissingRequiredField("business_priority")}
-          rows={listFieldRows(form.business_priority)}
+          rows={form.business_priority}
+          linkDialog={linkDialog}
           onAdd={() => addListFieldRow("business_priority")}
+          onApplyLink={applyLinkDialog}
+          onCloseLink={() => setLinkDialog(null)}
+          onLinkDialogChange={updateLinkDialog}
+          onOpenLink={openLinkDialog}
           onRemove={(index) => removeListFieldRow("business_priority", index)}
+          onSelectionChange={captureListSelection}
           onUpdate={(index, value) => updateListField("business_priority", index, value)}
         />
         <MetadataListCard
+          field="highlights_status"
           label="Highlights / status"
           required
           invalid={isMissingRequiredField("highlights_status")}
-          rows={listFieldRows(form.highlights_status)}
+          rows={form.highlights_status}
+          linkDialog={linkDialog}
           onAdd={() => addListFieldRow("highlights_status")}
+          onApplyLink={applyLinkDialog}
+          onCloseLink={() => setLinkDialog(null)}
+          onLinkDialogChange={updateLinkDialog}
+          onOpenLink={openLinkDialog}
           onRemove={(index) => removeListFieldRow("highlights_status", index)}
+          onSelectionChange={captureListSelection}
           onUpdate={(index, value) => updateListField("highlights_status", index, value)}
         />
         <MetadataListCard
+          field="goals"
           label="Goals"
           required
           invalid={isMissingRequiredField("goals")}
-          rows={listFieldRows(form.goals)}
+          rows={form.goals}
+          linkDialog={linkDialog}
           onAdd={() => addListFieldRow("goals")}
+          onApplyLink={applyLinkDialog}
+          onCloseLink={() => setLinkDialog(null)}
+          onLinkDialogChange={updateLinkDialog}
+          onOpenLink={openLinkDialog}
           onRemove={(index) => removeListFieldRow("goals", index)}
+          onSelectionChange={captureListSelection}
           onUpdate={(index, value) => updateListField("goals", index, value)}
         />
       </div>
@@ -474,11 +573,9 @@ export function ContributorPartnerMetadataPanel({
                 placeholder="Assigned"
               />
               <MetadataMonthPicker
-                value={dateToMonthValue(risk.due_date)}
+                value={risk.due_date ?? ""}
                 placeholder="Due Date"
-                onChange={(value) =>
-                  updateRisk(risk.local_id, { due_date: monthToDateValue(value) })
-                }
+                onChange={(value) => updateRisk(risk.local_id, { due_date: value })}
               />
               <AutoGrowTextarea
                 value={risk.ramification ?? ""}
@@ -558,22 +655,52 @@ export function ContributorPartnerMetadataPanel({
 }
 
 function MetadataListCard({
+  field,
   invalid = false,
   label,
+  linkDialog,
   onAdd,
+  onApplyLink,
+  onCloseLink,
+  onLinkDialogChange,
+  onOpenLink,
   onRemove,
+  onSelectionChange,
   onUpdate,
   required = false,
   rows,
 }: {
+  field: MetadataListField;
   invalid?: boolean;
   label: string;
+  linkDialog: MetadataLinkDialogState | null;
   onAdd: () => void;
+  onApplyLink: () => void;
+  onCloseLink: () => void;
+  onLinkDialogChange: (updates: Partial<Pick<MetadataLinkDialogState, "text" | "url">>) => void;
+  onOpenLink: (field: MetadataListField, index: number, row: string) => void;
   onRemove: (index: number) => void;
+  onSelectionChange: (
+    field: MetadataListField,
+    index: number,
+    textarea: HTMLTextAreaElement,
+  ) => void;
   onUpdate: (index: number, value: string) => void;
   required?: boolean;
   rows: string[];
 }) {
+  function handleLinkDialogKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      onCloseLink();
+      return;
+    }
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    onApplyLink();
+  }
+
   return (
     <section
       className={
@@ -595,23 +722,77 @@ function MetadataListCard({
       </div>
       <div className="metadata-card-body metadata-list">
         {rows.map((row, index) => (
-          <div className="metadata-list-row" key={`${label}-${index}`}>
+          <div
+            className={
+              linkDialog?.field === field && linkDialog.index === index
+                ? "metadata-list-row link-open"
+                : "metadata-list-row"
+            }
+            key={`${label}-${index}`}
+          >
             <AutoGrowTextarea
               className={invalid && !hasRequiredText(row) ? "metadata-textarea invalid" : undefined}
               value={row}
               onChange={(event) => onUpdate(index, event.target.value)}
+              onSelect={(event) => onSelectionChange(field, index, event.currentTarget)}
               rows={1}
-              maxLength={500}
+              maxLength={2000}
               aria-invalid={invalid && !hasRequiredText(row)}
             />
-            <button
-              className="metadata-row-remove"
-              type="button"
-              onClick={() => onRemove(index)}
-              aria-label={`Remove ${label} row ${index + 1}`}
-            >
-              x
-            </button>
+            <div className="metadata-row-actions">
+              <button
+                className="metadata-row-link"
+                type="button"
+                onClick={() => onOpenLink(field, index, row)}
+                aria-label={`Attach link to ${label} row ${index + 1}`}
+                title="Attach link"
+              >
+                <LinkIcon />
+              </button>
+              <button
+                className="metadata-row-remove"
+                type="button"
+                onClick={() => onRemove(index)}
+                aria-label={`Remove ${label} row ${index + 1}`}
+              >
+                x
+              </button>
+            </div>
+            {linkDialog?.field === field && linkDialog.index === index ? (
+              <div className="add-update-link-popover" role="dialog" aria-label="Add hyperlink">
+                <div className="add-update-link-title">Add hyperlink</div>
+                <label>
+                  <span>Link text</span>
+                  <input
+                    className="active"
+                    value={linkDialog.text}
+                    onChange={(event) => onLinkDialogChange({ text: event.target.value })}
+                    onKeyDown={handleLinkDialogKeyDown}
+                    maxLength={200}
+                  />
+                </label>
+                <label>
+                  <span>URL or file path</span>
+                  <input
+                    value={linkDialog.url}
+                    onChange={(event) => onLinkDialogChange({ url: event.target.value })}
+                    onKeyDown={handleLinkDialogKeyDown}
+                    maxLength={2000}
+                    placeholder="https:// or paste a file URL..."
+                    autoFocus
+                  />
+                </label>
+                {linkDialog.error ? <p>{linkDialog.error}</p> : null}
+                <div className="add-update-link-actions">
+                  <button type="button" onClick={onCloseLink}>
+                    Cancel
+                  </button>
+                  <button className="primary" type="button" onClick={onApplyLink}>
+                    Apply link
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         ))}
       </div>
@@ -659,10 +840,12 @@ function resizeTextarea(textarea: HTMLTextAreaElement | null) {
 }
 
 function MetadataMonthPicker({
+  maxLength = 240,
   onChange,
   placeholder,
   value,
 }: {
+  maxLength?: number;
   onChange: (value: string) => void;
   placeholder: string;
   value: string;
@@ -724,16 +907,23 @@ function MetadataMonthPicker({
   }
 
   const yearOptions = Array.from({ length: 21 }, (_, index) => selectedYear - 10 + index);
-  const label = parsedValue ? formatMonthLabel(value) : placeholder;
 
   return (
     <div
       className={`cycle-picker metadata-month-picker${open ? " open" : ""}${
-        parsedValue ? "" : " empty"
+        value ? "" : " empty"
       }`}
       ref={pickerRef}
     >
       <div className="cycle-picker-control">
+        <AutoGrowTextarea
+          className="metadata-month-textarea"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          rows={1}
+          maxLength={maxLength}
+        />
         <button
           className="cycle-picker-label"
           type="button"
@@ -741,7 +931,6 @@ function MetadataMonthPicker({
           aria-expanded={open}
           aria-label={`Open ${placeholder} picker`}
         >
-          <span>{label}</span>
           <span className="metadata-calendar-icon" aria-hidden="true" />
         </button>
       </div>
@@ -798,12 +987,11 @@ function validateRequiredMetadata(
   form: MetadataFormState,
 ): { message: string; missingFields: RequiredMetadataField[] } | null {
   const missingFields = [
-    { field: "why_this_partner", label: "Why this partner", value: form.why_this_partner },
     { field: "business_priority", label: "Business priority", value: form.business_priority },
     { field: "highlights_status", label: "Highlights / status", value: form.highlights_status },
     { field: "goals", label: "Goals", value: form.goals },
   ]
-    .filter((item) => !hasRequiredText(item.value));
+    .filter((item) => !hasRequiredRows(item.value));
 
   if (!missingFields.length) {
     return null;
@@ -822,19 +1010,21 @@ function hasRequiredText(value: string): boolean {
     .some((row) => row.trim().length > 0);
 }
 
+function hasRequiredRows(value: string | string[]): boolean {
+  return Array.isArray(value) ? value.some(hasRequiredText) : hasRequiredText(value);
+}
+
 function isRequiredMetadataField(field: keyof MetadataFormState): field is RequiredMetadataField {
-  return ["why_this_partner", "business_priority", "highlights_status", "goals"].includes(
-    field,
-  );
+  return ["business_priority", "highlights_status", "goals"].includes(field);
 }
 
 function metadataToForm(metadata: PartnerMetadata): MetadataFormState {
   return {
     status: metadata.status ?? "green",
     why_this_partner: metadata.why_this_partner ?? "",
-    business_priority: metadata.business_priority ?? "",
-    highlights_status: metadata.highlights_status ?? "",
-    goals: metadata.goals ?? "",
+    business_priority: listFieldRows(metadata.business_priority ?? ""),
+    highlights_status: listFieldRows(metadata.highlights_status ?? ""),
+    goals: listFieldRows(metadata.goals ?? ""),
     execution_timeline: timelineRowsFromText(metadata.execution_timeline),
     risks: metadata.risks.length ? metadata.risks.map(riskToEditable) : [emptyRisk()],
     resources: metadata.resources.length ? metadata.resources.map(resourceToEditable) : [emptyResource()],
@@ -845,9 +1035,9 @@ function formToPayload(form: MetadataFormState): PartnerMetadataPayload {
   return {
     status: form.status || null,
     why_this_partner: valueOrNull(form.why_this_partner),
-    business_priority: valueOrNull(form.business_priority),
-    highlights_status: valueOrNull(form.highlights_status),
-    goals: valueOrNull(form.goals),
+    business_priority: valueOrNull(rowsToListFieldText(form.business_priority)),
+    highlights_status: valueOrNull(rowsToListFieldText(form.highlights_status)),
+    goals: valueOrNull(rowsToListFieldText(form.goals)),
     execution_timeline: valueOrNull(timelineRowsToText(form.execution_timeline)),
     risks: form.risks
       .map(({ local_id: _localId, risk_id: _riskId, ...risk }) => ({
@@ -877,9 +1067,9 @@ function emptyForm(): MetadataFormState {
   return {
     status: "green",
     why_this_partner: "",
-    business_priority: "",
-    highlights_status: "",
-    goals: "",
+    business_priority: [""],
+    highlights_status: [""],
+    goals: [""],
     execution_timeline: [emptyTimelineRow()],
     risks: [emptyRisk()],
     resources: [emptyResource()],
@@ -950,12 +1140,8 @@ function dateToMonthValue(value: string | null | undefined): string {
   if (!value) {
     return "";
   }
-  return value.slice(0, 7);
-}
-
-function monthToDateValue(value: string | null): string | null {
-  const month = valueOrNull(value);
-  return month ? `${month}-01` : null;
+  const isoDate = /^(\d{4}-\d{2})(?:-\d{2})?$/.exec(value.trim());
+  return isoDate ? isoDate[1] : value;
 }
 
 function parseMonthValue(value: string | null | undefined): { year: number; month: number } | null {
@@ -1006,8 +1192,27 @@ function previousMonthValue(value: string): string {
 }
 
 function listFieldRows(value: string): string[] {
-  const rows = value.split("\n");
-  return rows.length ? rows : [""];
+  if (!value) {
+    return [""];
+  }
+
+  const blocks = value
+    .split(/\n{2,}/)
+    .map((row) => row.trim());
+  if (blocks.length > 1) {
+    return blocks;
+  }
+
+  const lines = value.split("\n");
+  const hasIndentedContinuation = lines.some((line) => /^\s+[-*•\d.]/.test(line));
+  if (!hasIndentedContinuation && lines.length > 1) {
+    return lines;
+  }
+  return [value];
+}
+
+function rowsToListFieldText(rows: string[]): string {
+  return rows.some((row) => row.trim()) ? rows.map((row) => row.trim()).join("\n\n") : "";
 }
 
 function timelineRowsFromText(value: string | null): EditableTimelineRow[] {
@@ -1037,4 +1242,47 @@ function timelineRowsToText(rows: EditableTimelineRow[]): string {
     })
     .filter(Boolean)
     .join("\n");
+}
+
+function normalizeHref(value: string): string {
+  const cleaned = value.trim();
+  if (!cleaned) {
+    return "";
+  }
+  if (/^(https?:\/\/|mailto:|\/|#)/i.test(cleaned)) {
+    return cleaned;
+  }
+  if (/^[^\s@]+\.[^\s@]+/.test(cleaned)) {
+    return `https://${cleaned}`;
+  }
+  return "";
+}
+
+function escapeMarkdownLinkText(value: string): string {
+  return value.replace(/]/g, "\\]");
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function LinkIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
+      <path
+        d="M10.6 13.4a2 2 0 0 0 2.8 0L17 9.9a3 3 0 0 0-4.2-4.3l-1.5 1.5"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+      <path
+        d="M13.4 10.6a2 2 0 0 0-2.8 0L7 14.1a3 3 0 0 0 4.2 4.3l1.5-1.5"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+    </svg>
+  );
 }

@@ -44,14 +44,13 @@ def test_model_request_uses_reference_payload_and_output_contract() -> None:
     assert request["mode"] == "dry_run_validation"
     assert request["rulebook"]["name"] == "source_event.jira"
     assert request["output_contract"]["decision"] == ["ignore", "create_update"]
-    assert "cycle_month" in request["output_contract"]["create_update"]["draft_update_optional_fields"]
+    optional_fields = request["output_contract"]["create_update"]["draft_update_optional_fields"]
+    assert "cycle_month" in optional_fields
     assert any(
-        "Extract only net-new facts" in constraint
-        for constraint in request["hard_constraints"]
+        "Extract only net-new facts" in constraint for constraint in request["hard_constraints"]
     )
     assert any(
-        "Do not treat acknowledgements" in constraint
-        for constraint in request["hard_constraints"]
+        "Do not treat acknowledgements" in constraint for constraint in request["hard_constraints"]
     )
     assert any(
         "Do not extract facts from acknowledgement clauses" in constraint
@@ -122,7 +121,9 @@ async def test_dry_run_create_output_records_preview_without_creating_updates() 
         "partner_id": str(source_event.partner_id),
         "cycle_month": "2026-08-01",
         "title": "AWS validation moved to review",
-        "summary": "<ul><li>The linked Jira event indicates validation is ready for review.</li></ul>",
+        "summary": (
+            "<ul><li>The linked Jira event indicates validation is ready for review.</li></ul>"
+        ),
         "source_type": "jira",
         "source_label": "AWS-123",
         "source_url": "https://jira.example.com/browse/AWS-123",
@@ -172,7 +173,9 @@ async def test_model_write_create_output_returns_pending_update_command() -> Non
         "partner_id": str(source_event.partner_id),
         "cycle_month": "2026-07-01",
         "title": "AWS validation moved to review",
-        "summary": "<ul><li>AWS validation moved to review.</li><li>2 partner tasks remain.</li></ul>",
+        "summary": (
+            "<ul><li>AWS validation moved to review.</li><li>2 partner tasks remain.</li></ul>"
+        ),
         "source_type": "jira",
         "source_label": "AWS-123",
         "source_url": "https://jira.example.com/browse/AWS-123",

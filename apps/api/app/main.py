@@ -13,6 +13,7 @@ from app.domains.admin.connected_sources.router import router as admin_connected
 from app.domains.admin.integrations.router import router as admin_integrations_router
 from app.domains.admin.knowledge_uploads.router import router as admin_knowledge_uploads_router
 from app.domains.admin.partners.router import router as admin_partners_router
+from app.domains.admin.topic_updates.router import router as admin_topic_updates_router
 from app.domains.admin.users.router import router as admin_users_router
 from app.domains.contributor.connected_sources.router import (
     router as contributor_connected_sources_router,
@@ -70,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_integrations_router)
     app.include_router(admin_knowledge_uploads_router)
     app.include_router(admin_partners_router)
+    app.include_router(admin_topic_updates_router)
     app.include_router(admin_users_router)
     app.include_router(contributor_connected_sources_router)
     app.include_router(contributor_metadata_router)

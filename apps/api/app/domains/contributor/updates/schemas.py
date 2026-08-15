@@ -26,9 +26,11 @@ class PartnerUpdateCreatePayload(BaseModel):
             raise ValueError("Value must not be blank.")
         return cleaned
 
-    @field_validator("summary")
+    @field_validator("summary", mode="before")
     @classmethod
-    def summary_must_be_safe_and_non_blank(cls, value: str) -> str:
+    def summary_must_be_safe_and_non_blank(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
         cleaned = sanitize_update_summary_html(value.strip())
         if not update_summary_text(cleaned).strip():
             raise ValueError("Value must not be blank.")
@@ -47,9 +49,35 @@ class ManualUpdateCreateRequest(BaseModel):
             raise ValueError("Value must not be blank.")
         return cleaned
 
-    @field_validator("summary")
+    @field_validator("summary", mode="before")
     @classmethod
-    def summary_must_be_safe_and_non_blank(cls, value: str) -> str:
+    def summary_must_be_safe_and_non_blank(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        cleaned = sanitize_update_summary_html(value.strip())
+        if not update_summary_text(cleaned).strip():
+            raise ValueError("Value must not be blank.")
+        return cleaned
+
+
+class FileUpdateCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    summary: str = Field(min_length=1, max_length=12000)
+    source_label: str | None = Field(default=None, max_length=240)
+
+    @field_validator("title")
+    @classmethod
+    def required_text_must_be_clean(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Value must not be blank.")
+        return cleaned
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def summary_must_be_safe_and_non_blank(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
         cleaned = sanitize_update_summary_html(value.strip())
         if not update_summary_text(cleaned).strip():
             raise ValueError("Value must not be blank.")
@@ -68,9 +96,11 @@ class PartnerUpdateEditRequest(BaseModel):
             raise ValueError("Value must not be blank.")
         return cleaned
 
-    @field_validator("summary")
+    @field_validator("summary", mode="before")
     @classmethod
-    def summary_must_be_safe_and_non_blank(cls, value: str) -> str:
+    def summary_must_be_safe_and_non_blank(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
         cleaned = sanitize_update_summary_html(value.strip())
         if not update_summary_text(cleaned).strip():
             raise ValueError("Value must not be blank.")

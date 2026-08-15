@@ -12,6 +12,7 @@ from app.db.models.partner_update import PartnerUpdate, PartnerUpdateStatus
 from app.db.session import get_session_factory
 from app.domains.contributor.partners.service import ContributorPartnerService
 from app.domains.contributor.updates.schemas import (
+    FileUpdateCreateRequest,
     ManualUpdateCreateRequest,
     PartnerUpdateCreatePayload,
     PartnerUpdateEditRequest,
@@ -83,6 +84,18 @@ async def test_contributor_update_lifecycle_and_dashboard_counts() -> None:
             ),
             current_user=current_user,
         )
+        file_update = await update_service.create_file_update(
+            partner_id=partner.partner_id,
+            cycle="2026-08",
+            payload=FileUpdateCreateRequest(
+                title="Uploaded files need review",
+                summary="Contributor uploaded supporting files for this partner update.",
+                source_label="partner-plan.pdf",
+            ),
+            current_user=current_user,
+        )
+        assert file_update.source_type == "file"
+        assert file_update.source_label == "partner-plan.pdf"
 
         pending_updates = await update_service.list_updates(
             partner_id=partner.partner_id,
@@ -94,6 +107,7 @@ async def test_contributor_update_lifecycle_and_dashboard_counts() -> None:
             manual_update.update_id,
             first_update.update_id,
             second_update.update_id,
+            file_update.update_id,
         }
 
         edited_update = await update_service.edit_pending_update(
@@ -130,6 +144,13 @@ async def test_contributor_update_lifecycle_and_dashboard_counts() -> None:
             current_user=current_user,
         )
         assert manual_approved_update.status == PartnerUpdateStatus.approved
+
+        dismissed_file_update = await update_service.dismiss_update(
+            partner_id=partner.partner_id,
+            update_id=file_update.update_id,
+            current_user=current_user,
+        )
+        assert dismissed_file_update.status == PartnerUpdateStatus.rejected
 
         with pytest.raises(HTTPException) as exc_info:
             await update_service.edit_pending_update(
@@ -182,6 +203,17 @@ def test_manual_update_requires_non_blank_text() -> None:
 
     with pytest.raises(ValidationError):
         ManualUpdateCreateRequest(title="Valid title", summary="   ")
+
+
+def test_update_summary_sanitizes_noisy_paste_before_length_validation() -> None:
+    noisy_summary = f'<span style="{"x" * 13000}">Visible partner update.</span>'
+
+    payload = ManualUpdateCreateRequest(
+        title="Noisy paste",
+        summary=noisy_summary,
+    )
+
+    assert payload.summary == "Visible partner update."
 
 
 def test_update_summary_allows_only_supported_rich_text() -> None:

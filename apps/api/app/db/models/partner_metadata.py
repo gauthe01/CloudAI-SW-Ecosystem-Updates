@@ -91,7 +91,7 @@ class PartnerMetadataRisk(Base):
     green_action: Mapped[str | None] = mapped_column(Text, nullable=True)
     severity: Mapped[str | None] = mapped_column(String(32), nullable=True)
     assigned_to: Mapped[str | None] = mapped_column(String(240), nullable=True)
-    due_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
+    due_date: Mapped[str | None] = mapped_column(Text, nullable=True)
     ramification: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     snapshot: Mapped[PartnerMetadataSnapshot] = relationship(back_populates="risks")

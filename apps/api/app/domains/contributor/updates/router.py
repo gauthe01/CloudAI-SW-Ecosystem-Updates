@@ -9,6 +9,7 @@ from app.db.models.identity import RoleType
 from app.db.models.partner_update import PartnerUpdateStatus
 from app.db.session import get_db_session
 from app.domains.contributor.updates.schemas import (
+    FileUpdateCreateRequest,
     ManualUpdateCreateRequest,
     PartnerUpdateEditRequest,
     PartnerUpdateListResponse,
@@ -59,6 +60,26 @@ async def create_manual_update(
     cycle: Annotated[str, Query(pattern=r"^\d{4}-\d{2}$")],
 ) -> PartnerUpdateResponse:
     return await service.create_manual_update(
+        partner_id=partner_id,
+        cycle=cycle,
+        payload=payload,
+        current_user=current_user,
+    )
+
+
+@router.post(
+    "/file",
+    response_model=PartnerUpdateResponse,
+    status_code=http_status.HTTP_201_CREATED,
+)
+async def create_file_update(
+    partner_id: uuid.UUID,
+    payload: FileUpdateCreateRequest,
+    service: Annotated[ContributorUpdateService, Depends(get_contributor_update_service)],
+    current_user: Annotated[UserResponse, Depends(require_roles(RoleType.contributor))],
+    cycle: Annotated[str, Query(pattern=r"^\d{4}-\d{2}$")],
+) -> PartnerUpdateResponse:
+    return await service.create_file_update(
         partner_id=partner_id,
         cycle=cycle,
         payload=payload,

@@ -1,8 +1,8 @@
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
-import re
 from html import escape
 from typing import Any, Self
 
@@ -202,9 +202,7 @@ def normalize_html_list_summary(summary: str) -> str:
         return summary
 
     split_items = [
-        clause
-        for item in list_items
-        for clause in split_semicolon_clauses(item.strip())
+        clause for item in list_items for clause in split_semicolon_clauses(item.strip())
     ]
     if not split_items:
         return summary

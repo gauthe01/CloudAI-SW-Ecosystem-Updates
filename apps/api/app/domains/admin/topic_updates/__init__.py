@@ -1,0 +1,1 @@
+"""Admin topic update domain."""

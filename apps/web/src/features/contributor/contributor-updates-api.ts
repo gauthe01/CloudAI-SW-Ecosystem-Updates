@@ -40,6 +40,12 @@ export type ManualUpdateCreatePayload = {
   summary: string;
 };
 
+export type FileUpdateCreatePayload = {
+  title: string;
+  summary: string;
+  source_label?: string;
+};
+
 export async function listContributorPartnerUpdates({
   partnerId,
   cycle,
@@ -90,6 +96,28 @@ export async function createContributorManualUpdate(
 
   if (!response.ok) {
     throw new Error(await readError(response, "Unable to add manual update."));
+  }
+
+  return response.json();
+}
+
+export async function createContributorFileUpdate(
+  partnerId: string,
+  cycle: string,
+  payload: FileUpdateCreatePayload,
+): Promise<PartnerUpdate> {
+  const response = await fetch(
+    `${apiBaseUrl}/api/contributor/partners/${partnerId}/updates/file?cycle=${cycle}`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(await readError(response, "Unable to add file update."));
   }
 
   return response.json();
@@ -154,9 +182,40 @@ async function runUpdateAction(
 
 async function readError(response: Response, fallbackMessage: string): Promise<string> {
   try {
-    const payload = (await response.json()) as { detail?: string };
-    return payload.detail ?? fallbackMessage;
+    const payload = (await response.json()) as { detail?: unknown };
+    return formatErrorDetail(payload.detail, fallbackMessage);
   } catch {
     return fallbackMessage;
   }
+}
+
+function formatErrorDetail(detail: unknown, fallbackMessage: string): string {
+  if (typeof detail === "string") {
+    return detail;
+  }
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => {
+        if (!isApiValidationError(item)) {
+          return "";
+        }
+        const location = item.loc?.map(String).join(".");
+        return location ? `${location}: ${item.msg}` : item.msg;
+      })
+      .filter(Boolean);
+    return messages.join(" ") || fallbackMessage;
+  }
+  if (isApiValidationError(detail)) {
+    return detail.msg;
+  }
+  return fallbackMessage;
+}
+
+function isApiValidationError(value: unknown): value is { loc?: unknown[]; msg: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "msg" in value &&
+    typeof (value as { msg?: unknown }).msg === "string"
+  );
 }

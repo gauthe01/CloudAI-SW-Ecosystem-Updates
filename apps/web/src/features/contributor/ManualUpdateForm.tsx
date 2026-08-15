@@ -14,10 +14,17 @@ import {
 
 import {
   PartnerUpdate,
+  createContributorFileUpdate,
   createContributorManualUpdate,
 } from "@/features/contributor/contributor-updates-api";
+import {
+  KnowledgeUpload,
+  createContributorPartnerUpload,
+} from "@/features/uploads/uploads-api";
 
 const MAX_SUMMARY_LENGTH = 500;
+
+type UpdateInputMode = "manual" | "files";
 
 type ManualUpdateFormProps = {
   partnerId: string;
@@ -32,12 +39,15 @@ type DraftAttachment = {
   id: string;
   name: string;
   size: number;
+  file: File;
   url: string;
   objectUrl: string;
+  uploadId?: string;
 };
 
 type SavedPreview = {
   id: string;
+  mode: UpdateInputMode;
   summary: string;
   attachments: DraftAttachment[];
 };
@@ -70,6 +80,7 @@ export function ManualUpdateForm({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const selectedRangeRef = useRef<Range | null>(null);
   const objectUrlsRef = useRef<Set<string>>(new Set());
+  const [inputMode, setInputMode] = useState<UpdateInputMode>("manual");
   const [summaryHtml, setSummaryHtml] = useState("");
   const [summaryText, setSummaryText] = useState("");
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
@@ -105,6 +116,22 @@ export function ManualUpdateForm({
   }, [toast]);
 
   const cycleContext = useMemo(() => `${partnerName} · ${cycleLabel}`, [cycleLabel, partnerName]);
+  const isFilesMode = inputMode === "files";
+  const editorLabel = isFilesMode ? "Prompt / notes" : "Update summary *";
+  const editorPlaceholder = isFilesMode
+    ? "Tell the agent what to extract, summarize, or pay attention to in these files..."
+    : "Describe what happened, what was agreed, or what needs action...";
+  const attachmentsLabel = isFilesMode ? "Files" : "Attachments";
+  const previewEmptyText = isFilesMode
+    ? "Uploaded file updates will appear here so you can review what you have staged in this session."
+    : "Saved manual updates will appear here so you can review what you have staged in this session.";
+  const saveButtonLabel = saving
+    ? isFilesMode
+      ? "Uploading..."
+      : "Saving..."
+    : isFilesMode
+      ? "Upload & save"
+      : "Save update";
 
   function syncEditorState() {
     const editor = editorRef.current;
@@ -216,38 +243,85 @@ export function ManualUpdateForm({
     event.preventDefault();
     setError(null);
 
-    if (!summaryText.trim()) {
+    if (inputMode === "manual" && !summaryText.trim()) {
       editorRef.current?.classList.add("invalid");
       editorRef.current?.focus();
       setError("Update summary is required.");
       return;
     }
 
+    if (inputMode === "files" && attachments.length === 0) {
+      setError("Choose at least one file to upload.");
+      return;
+    }
+
     if (remainingCharacters < 0) {
       editorRef.current?.focus();
-      setError(`Update summary must be ${MAX_SUMMARY_LENGTH} characters or fewer.`);
+      setError(
+        `${inputMode === "files" ? "Prompt" : "Update summary"} must be ${MAX_SUMMARY_LENGTH} characters or fewer.`,
+      );
       return;
     }
 
     setSaving(true);
     try {
-      const update = await createContributorManualUpdate(partnerId, cycle, {
-        title: deriveUpdateTitle(summaryText),
-        summary: summaryHtml || escapeHtml(summaryText),
-      });
-      const savedAttachments = attachments;
+      const { update, savedAttachments } =
+        inputMode === "files" ? await saveFileUpdate() : await saveManualUpdate();
       setSavedPreviews((current) => [
-        { id: update.update_id, summary: update.summary, attachments: savedAttachments },
+        {
+          id: update.update_id,
+          mode: inputMode,
+          summary: update.summary,
+          attachments: savedAttachments,
+        },
         ...current,
       ]);
       clearDraft();
-      setToast("Update staged. You can add another one.");
+      setToast(`${inputMode === "files" ? "File update" : "Update"} staged. You can add another one.`);
       onCreated(update);
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to save update.");
     } finally {
       setSaving(false);
     }
+  }
+
+  async function saveManualUpdate(): Promise<{
+    update: PartnerUpdate;
+    savedAttachments: DraftAttachment[];
+  }> {
+    const update = await createContributorManualUpdate(partnerId, cycle, {
+      title: deriveUpdateTitle(summaryText),
+      summary: summaryHtml || escapeHtml(summaryText),
+    });
+    return { update, savedAttachments: attachments };
+  }
+
+  async function saveFileUpdate(): Promise<{
+    update: PartnerUpdate;
+    savedAttachments: DraftAttachment[];
+  }> {
+    const uploadDescription = summaryText.trim() || `Uploaded from Add update for ${cycleLabel}.`;
+    const uploadedFiles = await Promise.all(
+      attachments.map((attachment) =>
+        createContributorPartnerUpload(partnerId, {
+          file: attachment.file,
+          title: attachment.name,
+          description: uploadDescription,
+        }),
+      ),
+    );
+    const savedAttachments = attachments.map((attachment, index) => ({
+      ...attachment,
+      uploadId: uploadedFiles[index]?.upload_id,
+      url: `Uploaded file: ${uploadedFiles[index]?.upload_id ?? attachment.name}`,
+    }));
+    const update = await createContributorFileUpdate(partnerId, cycle, {
+      title: deriveFileUpdateTitle(summaryText, uploadedFiles),
+      summary: buildFileUpdateSummary(summaryHtml, summaryText, uploadedFiles),
+      source_label: buildFileSourceLabel(uploadedFiles),
+    });
+    return { update, savedAttachments };
   }
 
   function clearDraft() {
@@ -257,10 +331,22 @@ export function ManualUpdateForm({
     }
     setSummaryHtml("");
     setSummaryText("");
-    setAttachments([]);
+    setAttachments((current) => {
+      current.forEach((attachment) => {
+        URL.revokeObjectURL(attachment.objectUrl);
+        objectUrlsRef.current.delete(attachment.objectUrl);
+      });
+      return [];
+    });
     selectedRangeRef.current = null;
     setLinkDialog(null);
     updateActiveToolbar();
+  }
+
+  function changeInputMode(nextMode: UpdateInputMode) {
+    setInputMode(nextMode);
+    setError(null);
+    editorRef.current?.classList.remove("invalid");
   }
 
   function addAttachmentFiles(files: FileList | File[]) {
@@ -272,6 +358,7 @@ export function ManualUpdateForm({
         id,
         name: file.name,
         size: file.size,
+        file,
         url: `${window.location.origin}${window.location.pathname}#${encodeURIComponent(id)}`,
         objectUrl,
       };
@@ -438,14 +525,19 @@ export function ManualUpdateForm({
           Cancel
         </button>
         <button className="add-update-save" type="submit" disabled={saving}>
-          {saving ? "Saving..." : "Save update"}
+          {saveButtonLabel}
         </button>
       </div>
 
       <section className="add-update-workspace" aria-label="Add update workspace">
         <aside className="add-update-source-panel" aria-label="Update source">
           <div className="add-update-source-grid">
-            <button className="add-update-source-card active" type="button" aria-pressed="true">
+            <button
+              className={`add-update-source-card${inputMode === "manual" ? " active" : ""}`}
+              type="button"
+              aria-pressed={inputMode === "manual"}
+              onClick={() => changeInputMode("manual")}
+            >
               <span className="add-update-source-icon" aria-hidden="true">
                 <ManualIcon />
               </span>
@@ -453,10 +545,10 @@ export function ManualUpdateForm({
               <span>Type directly</span>
             </button>
             <button
-              className="add-update-source-card disabled"
+              className={`add-update-source-card${inputMode === "files" ? " active" : ""}`}
               type="button"
-              disabled
-              aria-disabled="true"
+              aria-pressed={inputMode === "files"}
+              onClick={() => changeInputMode("files")}
             >
               <span className="add-update-source-icon" aria-hidden="true">
                 <FilesIcon />
@@ -469,7 +561,7 @@ export function ManualUpdateForm({
 
         <div className="add-update-panel">
           <div className="add-update-editor-field">
-            <label htmlFor="manual-update-summary-editor">Update summary *</label>
+            <label htmlFor="manual-update-summary-editor">{editorLabel}</label>
             <div className="add-update-rte-toolbar" aria-label="Text formatting toolbar">
               <button
                 className={activeToolbar.bold ? "active" : ""}
@@ -543,8 +635,8 @@ export function ManualUpdateForm({
               contentEditable
               role="textbox"
               aria-multiline="true"
-              aria-label="Update summary"
-              data-placeholder="Describe what happened, what was agreed, or what needs action..."
+              aria-label={editorLabel}
+              data-placeholder={editorPlaceholder}
               onInput={syncEditorState}
               onBlur={syncEditorState}
               onKeyUp={syncEditorState}
@@ -597,7 +689,7 @@ export function ManualUpdateForm({
 
           <div className="add-update-attachments">
             <div className="add-update-attachments-head">
-              <strong>Attachments</strong>
+              <strong>{attachmentsLabel}</strong>
               <button type="button" onClick={() => fileInputRef.current?.click()}>
                 + Browse files
               </button>
@@ -625,7 +717,9 @@ export function ManualUpdateForm({
                   <div className="add-update-attachment-row" key={attachment.id}>
                     <span>
                       <strong>{attachment.name}</strong>
-                      <small>Ready · {formatBytes(attachment.size)}</small>
+                      <small>
+                        {attachment.uploadId ? "Uploaded" : "Ready"} · {formatBytes(attachment.size)}
+                      </small>
                     </span>
                     <span className="add-update-attachment-actions">
                       <button type="button" onClick={() => copyAttachmentUrl(attachment)}>
@@ -641,14 +735,14 @@ export function ManualUpdateForm({
             ) : null}
           </div>
 
-          <section className="add-update-preview" aria-label="Saved manual update previews">
+          <section className="add-update-preview" aria-label="Saved update previews">
             <span>Preview</span>
             <div className="add-update-preview-list" aria-live="polite">
               {savedPreviews.length ? (
                 savedPreviews.map((preview) => (
                   <article className="add-update-preview-card" key={preview.id}>
                     <div className="add-update-preview-top">
-                      <strong>Manual</strong>
+                      <strong>{preview.mode === "files" ? "Files" : "Manual"}</strong>
                       <small>Just now</small>
                     </div>
                     <div
@@ -673,9 +767,7 @@ export function ManualUpdateForm({
                   </article>
                 ))
               ) : (
-                <div className="add-update-preview-empty">
-                  Saved manual updates will appear here so you can review what you have staged in this session.
-                </div>
+                <div className="add-update-preview-empty">{previewEmptyText}</div>
               )}
             </div>
           </section>
@@ -692,6 +784,45 @@ function deriveUpdateTitle(summary: string): string {
     .split(/(?<=[.!?])\s/)[0]
     ?.trim();
   return (firstLine || "Manual update").slice(0, 120);
+}
+
+function deriveFileUpdateTitle(promptText: string, uploads: KnowledgeUpload[]): string {
+  const cleanedPrompt = promptText.trim();
+  if (cleanedPrompt) {
+    return deriveUpdateTitle(cleanedPrompt);
+  }
+  if (uploads.length === 1) {
+    return `File upload: ${uploads[0].original_filename}`.slice(0, 120);
+  }
+  return `File upload: ${uploads.length} files`;
+}
+
+function buildFileSourceLabel(uploads: KnowledgeUpload[]): string {
+  if (uploads.length === 1) {
+    return uploads[0].original_filename.slice(0, 240);
+  }
+  const firstNames = uploads
+    .slice(0, 2)
+    .map((upload) => upload.original_filename)
+    .join(", ");
+  const suffix = uploads.length > 2 ? ` + ${uploads.length - 2} more` : "";
+  return `${firstNames}${suffix}`.slice(0, 240);
+}
+
+function buildFileUpdateSummary(
+  promptHtml: string,
+  promptText: string,
+  uploads: KnowledgeUpload[],
+): string {
+  const cleanedPromptHtml = promptHtml.trim();
+  const intro = cleanedPromptHtml || escapeHtml(promptText.trim()) || "Uploaded files for review.";
+  const fileItems = uploads
+    .map(
+      (upload) =>
+        `<li>${escapeHtml(upload.original_filename)} <em>(${formatBytes(upload.file_size_bytes)})</em></li>`,
+    )
+    .join("");
+  return `${intro}<p><strong>Uploaded files</strong></p><ul>${fileItems}</ul>`;
 }
 
 function normalizeHref(value: string): string {

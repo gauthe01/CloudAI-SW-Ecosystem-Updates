@@ -173,7 +173,7 @@ class ContributorMetadataService:
             green_action=clean_optional(risk.green_action),
             severity=clean_optional(risk.severity),
             assigned_to=clean_optional(risk.assigned_to),
-            due_date=risk.due_date,
+            due_date=clean_optional(risk.due_date),
             ramification=clean_optional(risk.ramification),
         )
 

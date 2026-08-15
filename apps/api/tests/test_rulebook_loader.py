@@ -17,6 +17,12 @@ PRODUCTION_SOURCE_EVENT_RULEBOOKS = {
     "source_event.slack",
 }
 
+ACTIVE_ADMIN_RULEBOOKS = {
+    "admin_knowledge_upload",
+    "admin_knowledge_upload.google_workstreams_ppt",
+    "admin_knowledge_upload.microsoft_workstreams_ppt",
+}
+
 
 def test_registered_rulebooks_load_from_default_directory() -> None:
     loader = RulebookLoader()
@@ -44,13 +50,21 @@ def test_registered_rulebooks_load_from_default_directory() -> None:
                     "Do not ignore a Jira comment solely because it is "
                     "phrased as a request" in rulebook.body
                 )
+        elif name in ACTIVE_ADMIN_RULEBOOKS:
+            assert rulebook.status == "active"
+            assert rulebook.version
+            assert "invent" in rulebook.body.lower()
         else:
             assert rulebook.status == "placeholder"
             assert rulebook.version.startswith("placeholder-")
         assert len(rulebook.content_hash) == 64
         assert rulebook.trace_version == f"{rulebook.version}:{rulebook.content_hash[:12]}"
         assert "## Purpose" in rulebook.body
-        assert "## Input Contract" in rulebook.body
+        if name not in {
+            "admin_knowledge_upload.google_workstreams_ppt",
+            "admin_knowledge_upload.microsoft_workstreams_ppt",
+        }:
+            assert "## Input Contract" in rulebook.body
         assert "## Output Contract" in rulebook.body
 
 

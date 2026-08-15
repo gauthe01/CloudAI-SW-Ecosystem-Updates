@@ -15,6 +15,7 @@ export const sectionLabels: Record<AccountView, string[]> = {
     "Admin Console",
     "Partners",
     "Knowledge Upload",
+    "Events/Topics",
     "Team",
     "Global Integrations",
     "Source Approvals",
@@ -28,4 +29,5 @@ export const adminSectionDisplayLabels: Record<string, string> = {
   "Global Integrations": "Global Integrations",
   "Source Approvals": "Connected Sources",
   "Knowledge Upload": "Knowledge Upload",
+  "Events/Topics": "Events/Topics",
 };

@@ -31,8 +31,14 @@ from app.db.models.integration import (
 )
 from app.db.models.knowledge_upload import (
     KnowledgeUpload,
+    KnowledgeUploadCandidate,
+    KnowledgeUploadCandidateReviewStatus,
+    KnowledgeUploadCandidateStatus,
     KnowledgeUploadProcessingStatus,
     KnowledgeUploadScope,
+    KnowledgeUploadSession,
+    KnowledgeUploadSessionStatus,
+    MemoryChunk,
 )
 from app.db.models.partner import (
     Partner,
@@ -62,6 +68,7 @@ from app.db.models.source_event import (
 )
 from app.db.models.source_sync import SourceSyncRun, SourceSyncRunStatus, SourceSyncState
 from app.db.models.storage_object import StorageObject, StorageObjectSourceKind
+from app.db.models.topic_update import TopicUpdate, TopicUpdateStatus
 
 __all__ = [
     "AccountAccessRequest",
@@ -87,8 +94,14 @@ __all__ = [
     "PartnerContributorAssignment",
     "PartnerHealthStatus",
     "KnowledgeUpload",
+    "KnowledgeUploadCandidate",
+    "KnowledgeUploadCandidateReviewStatus",
+    "KnowledgeUploadCandidateStatus",
     "KnowledgeUploadProcessingStatus",
+    "KnowledgeUploadSession",
+    "KnowledgeUploadSessionStatus",
     "KnowledgeUploadScope",
+    "MemoryChunk",
     "PartnerMetadataRisk",
     "PartnerMetadataSnapshot",
     "PartnerResourceLink",
@@ -107,6 +120,8 @@ __all__ = [
     "SourceSyncState",
     "StorageObject",
     "StorageObjectSourceKind",
+    "TopicUpdate",
+    "TopicUpdateStatus",
     "User",
     "UserLocalCredential",
     "UserRoleAssignment",

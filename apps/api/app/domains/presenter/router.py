@@ -57,7 +57,7 @@ async def list_presenter_updates(
     _: Annotated[UserResponse, Depends(require_roles(RoleType.presenter))],
     cycle: Annotated[str, Query(pattern=r"^\d{4}-\d{2}$")],
     partner_id: uuid.UUID | None = None,
-    partner_ids: list[uuid.UUID] | None = Query(default=None),
+    partner_ids: Annotated[list[uuid.UUID] | None, Query()] = None,
     search: str | None = None,
     date_start: date | None = None,
     date_end: date | None = None,
@@ -90,7 +90,7 @@ async def get_presenter_analysis(
     _: Annotated[UserResponse, Depends(require_roles(RoleType.presenter))],
     cycle: Annotated[str, Query(pattern=r"^\d{4}-\d{2}$")],
     partner_id: uuid.UUID | None = None,
-    partner_ids: list[uuid.UUID] | None = Query(default=None),
+    partner_ids: Annotated[list[uuid.UUID] | None, Query()] = None,
     date_start: date | None = None,
     date_end: date | None = None,
 ) -> PresenterAnalysisResponse:

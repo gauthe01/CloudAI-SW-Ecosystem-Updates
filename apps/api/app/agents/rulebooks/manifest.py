@@ -64,4 +64,19 @@ RULEBOOK_MANIFEST: dict[str, RulebookManifestEntry] = {
         filename="decision_board.md",
         description="Decision board and leadership action analysis guidance.",
     ),
+    "admin_knowledge_upload": RulebookManifestEntry(
+        name="admin_knowledge_upload",
+        filename="admin_knowledge_upload.md",
+        description="Admin document upload extraction and candidate-review guidance.",
+    ),
+    "admin_knowledge_upload.google_workstreams_ppt": RulebookManifestEntry(
+        name="admin_knowledge_upload.google_workstreams_ppt",
+        filename="admin_knowledge_upload.google_workstreams_ppt.md",
+        description="Google workstream PowerPoint extraction guidance.",
+    ),
+    "admin_knowledge_upload.microsoft_workstreams_ppt": RulebookManifestEntry(
+        name="admin_knowledge_upload.microsoft_workstreams_ppt",
+        filename="admin_knowledge_upload.microsoft_workstreams_ppt.md",
+        description="Microsoft workstream PowerPoint extraction guidance.",
+    ),
 }
