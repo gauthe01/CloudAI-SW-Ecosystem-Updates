@@ -2,6 +2,7 @@ const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:800
 
 export type AdminTopicUpdate = {
   topic_update_id: string;
+  topic_id: string | null;
   topic_label: string;
   cycle: string;
   title: string;
@@ -20,6 +21,19 @@ export type AdminTopicUpdateList = {
   topics: AdminTopicUpdate[];
   total_count: number;
   topic_count: number;
+};
+
+export type AdminEventTopic = {
+  topic_id: string;
+  name: string;
+  normalized_name: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdminEventTopicList = {
+  topics: AdminEventTopic[];
 };
 
 export async function listAdminTopicUpdates({
@@ -50,4 +64,18 @@ export async function listAdminTopicUpdates({
   }
 
   return (await response.json()) as AdminTopicUpdateList;
+}
+
+export async function listAdminEventTopics(): Promise<AdminEventTopic[]> {
+  const response = await fetch(`${apiBaseUrl}/api/admin/topic-updates/catalog`, {
+    credentials: "include",
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error("Unable to load Events/Topics labels.");
+  }
+
+  const payload = (await response.json()) as AdminEventTopicList;
+  return payload.topics;
 }

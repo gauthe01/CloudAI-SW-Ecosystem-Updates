@@ -90,11 +90,12 @@ async def resolve_knowledge_upload_session_mappings(
     session_id: uuid.UUID,
     payload: KnowledgeUploadMappingsRequest,
     service: Annotated[KnowledgeUploadService, Depends(get_knowledge_upload_service)],
-    _: Annotated[UserResponse, Depends(require_roles(RoleType.admin))],
+    current_user: Annotated[UserResponse, Depends(require_roles(RoleType.admin))],
 ) -> KnowledgeUploadSessionDetailResponse:
     return await service.apply_admin_session_mappings(
         session_id=session_id,
         mappings=payload.mappings,
+        current_user=current_user,
     )
 
 

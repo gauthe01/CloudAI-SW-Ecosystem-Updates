@@ -22,7 +22,7 @@ from app.db.models.knowledge_upload import (
 from app.db.models.partner import Partner, PartnerContributorAssignment, PartnerStatus
 from app.db.models.partner_update import PartnerUpdate, PartnerUpdateStatus
 from app.db.models.source_event import AgentRun
-from app.db.models.topic_update import TopicUpdate, TopicUpdateStatus
+from app.db.models.topic_update import EventTopic, TopicUpdate, TopicUpdateStatus
 from app.db.session import get_session_factory
 from app.domains.identity.service import user_to_response
 from app.domains.uploads import storage as upload_storage
@@ -394,12 +394,17 @@ async def test_admin_knowledge_upload_session_commits_events_topics(tmp_path) ->
                         "raw_label": "Ecosystem Projects",
                         "action": "new_topic",
                         "partner_id": None,
+                        "topic_id": None,
+                        "topic_name": None,
                     },
                 )()
             ],
+            current_user=user_to_response(admin),
         )
         topic_candidate = mapped.candidates[0]
         assert topic_candidate.partner_id is None
+        assert topic_candidate.topic_id is not None
+        assert topic_candidate.topic_name == "Ecosystem Projects"
         assert topic_candidate.review_status == "topic_pending"
         assert "Events/Topics" in (topic_candidate.parser_notes or "")
 
@@ -430,6 +435,7 @@ async def test_admin_knowledge_upload_session_commits_events_topics(tmp_path) ->
         )
         assert len(topic_updates) == 1
         assert topic_updates[0].status == TopicUpdateStatus.approved.value
+        assert topic_updates[0].topic_id == topic_candidate.topic_id
         assert topic_updates[0].topic_label == "Ecosystem Projects"
         assert (
             topic_updates[0].source_event_key == f"knowledge-upload-topic:{approved.candidate_id}"
@@ -440,6 +446,120 @@ async def test_admin_knowledge_upload_session_commits_events_topics(tmp_path) ->
             )
         )
         assert partner_updates == []
+
+        await cleanup_test_records(session, [partner_name], [admin_email])
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_admin_knowledge_upload_auto_maps_existing_events_topic(tmp_path) -> None:
+    admin_email = f"topic-auto-admin-{uuid.uuid4()}@example.com"
+    partner_name = f"TopicAutoPartner{uuid.uuid4().hex[:8]}"
+    settings = get_settings().model_copy(update={"local_upload_storage_dir": str(tmp_path)})
+
+    async with get_session_factory()() as session:
+        await cleanup_test_records(session, [partner_name], [admin_email])
+        admin = User(email=admin_email, display_name="Topic Auto Admin")
+        admin.role_assignments = [UserRoleAssignment(role_type=RoleType.admin)]
+        partner = Partner(
+            name=partner_name,
+            description="Partner present so the report has configured partner context",
+            status=PartnerStatus.active.value,
+        )
+        session.add_all([admin, partner])
+        await session.flush()
+        service = KnowledgeUploadService(session, settings)
+        topic = await service._get_or_create_event_topic("Marketing", created_by=admin.user_id)
+        await session.commit()
+
+        detail = await service.create_admin_session(
+            files=[
+                upload_file(
+                    "Software Ecosystem Monthly Status Report_Feb 28 2026.docx",
+                    docx_list_bytes(
+                        [
+                            ("Marketing:", 1, None),
+                            ("Cloud Marketing Initiatives Tracked here", 0, None, "16"),
+                        ]
+                    ),
+                )
+            ],
+            current_user=user_to_response(admin),
+        )
+
+        assert detail.unknown_labels == []
+        assert len(detail.candidates) == 1
+        assert detail.candidates[0].topic_id == topic.topic_id
+        assert detail.candidates[0].topic_name == "Marketing"
+        assert detail.candidates[0].review_status == "topic_pending"
+
+        await cleanup_test_records(session, [partner_name], [admin_email])
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_admin_knowledge_upload_maps_unknown_label_to_existing_events_topic(tmp_path) -> None:
+    admin_email = f"topic-existing-admin-{uuid.uuid4()}@example.com"
+    partner_name = f"TopicExistingPartner{uuid.uuid4().hex[:8]}"
+    settings = get_settings().model_copy(update={"local_upload_storage_dir": str(tmp_path)})
+
+    async with get_session_factory()() as session:
+        await cleanup_test_records(session, [partner_name], [admin_email])
+        admin = User(email=admin_email, display_name="Topic Existing Admin")
+        admin.role_assignments = [UserRoleAssignment(role_type=RoleType.admin)]
+        partner = Partner(
+            name=partner_name,
+            description="Partner present so the report has configured partner context",
+            status=PartnerStatus.active.value,
+        )
+        session.add_all([admin, partner])
+        await session.flush()
+        service = KnowledgeUploadService(session, settings)
+        topic = await service._get_or_create_event_topic(
+            "Upcoming Conferences and Events",
+            created_by=admin.user_id,
+        )
+        await session.commit()
+
+        detail = await service.create_admin_session(
+            files=[
+                upload_file(
+                    "Software Ecosystem Monthly Status Report_Feb 28 2026.docx",
+                    docx_list_bytes(
+                        [
+                            ("Upcoming PTO:", 1, None),
+                            ("Yan: June 1-5", 0, None, "16"),
+                        ]
+                    ),
+                )
+            ],
+            current_user=user_to_response(admin),
+        )
+
+        assert detail.unknown_labels == ["Upcoming PTO"]
+        mapped = await service.apply_admin_session_mappings(
+            session_id=detail.session.session_id,
+            mappings=[
+                type(
+                    "Mapping",
+                    (),
+                    {
+                        "raw_label": "Upcoming PTO",
+                        "action": "existing_topic",
+                        "partner_id": None,
+                        "topic_id": topic.topic_id,
+                        "topic_name": None,
+                    },
+                )()
+            ],
+            current_user=user_to_response(admin),
+        )
+
+        assert mapped.unknown_labels == []
+        assert mapped.candidates[0].topic_id == topic.topic_id
+        assert mapped.candidates[0].topic_name == "Upcoming Conferences and Events"
+        assert mapped.candidates[0].raw_label == "Upcoming Conferences and Events"
+        assert mapped.candidates[0].review_status == "topic_pending"
 
         await cleanup_test_records(session, [partner_name], [admin_email])
         await session.commit()
@@ -1346,6 +1466,7 @@ async def cleanup_test_records(
     user_ids = select_user_ids(emails)
     await session.execute(delete(MemoryChunk).where(MemoryChunk.partner_id.in_(partner_ids)))
     await session.execute(delete(TopicUpdate).where(TopicUpdate.created_by.in_(user_ids)))
+    await session.execute(delete(EventTopic).where(EventTopic.created_by.in_(user_ids)))
     await session.execute(
         delete(KnowledgeUploadCandidate).where(
             KnowledgeUploadCandidate.upload_id.in_(

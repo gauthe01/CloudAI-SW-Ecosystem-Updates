@@ -68,7 +68,7 @@ from app.db.models.source_event import (
 )
 from app.db.models.source_sync import SourceSyncRun, SourceSyncRunStatus, SourceSyncState
 from app.db.models.storage_object import StorageObject, StorageObjectSourceKind
-from app.db.models.topic_update import TopicUpdate, TopicUpdateStatus
+from app.db.models.topic_update import EventTopic, EventTopicStatus, TopicUpdate, TopicUpdateStatus
 
 __all__ = [
     "AccountAccessRequest",
@@ -81,6 +81,8 @@ __all__ = [
     "ConnectedSourceSlackChannel",
     "ConnectedSourceStatus",
     "ConnectedSourceType",
+    "EventTopic",
+    "EventTopicStatus",
     "AgentRun",
     "AgentRunStatus",
     "AgentRunType",

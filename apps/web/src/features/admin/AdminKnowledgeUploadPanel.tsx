@@ -17,6 +17,10 @@ import {
   createAdminPartner,
   listAdminPartners,
 } from "@/features/admin/admin-partners-api";
+import {
+  AdminEventTopic,
+  listAdminEventTopics,
+} from "@/features/admin/admin-topic-updates-api";
 import { AdminUser, listAdminUsers } from "@/features/admin/admin-users-api";
 import {
   KnowledgeUploadCandidate,
@@ -34,6 +38,8 @@ type WizardStep = "upload" | "confirm" | "resolve" | "approve" | "commit" | "suc
 type ResolveChoice = {
   action: KnowledgeUploadMappingDecision["action"] | "create_partner";
   partnerId: string;
+  topicId?: string;
+  newTopicName?: string;
   contributorUserId?: string;
   newPartnerName?: string;
 };
@@ -64,6 +70,7 @@ const WIZARD_STEPS: Array<{ key: Exclude<WizardStep, "success">; label: string }
 
 export function AdminKnowledgeUploadPanel() {
   const [partners, setPartners] = useState<AdminPartner[]>([]);
+  const [eventTopics, setEventTopics] = useState<AdminEventTopic[]>([]);
   const [contributors, setContributors] = useState<AdminUser[]>([]);
   const [sessionDetail, setSessionDetail] = useState<KnowledgeUploadSessionDetail | null>(null);
   const [commitResult, setCommitResult] = useState<KnowledgeUploadCommitResponse | null>(null);
@@ -82,10 +89,11 @@ export function AdminKnowledgeUploadPanel() {
   useEffect(() => {
     let mounted = true;
 
-    Promise.all([listAdminPartners(), listAdminUsers()])
-      .then(([nextPartners, nextUsers]) => {
+    Promise.all([listAdminPartners(), listAdminUsers(), listAdminEventTopics()])
+      .then(([nextPartners, nextUsers, nextTopics]) => {
         if (mounted) {
           setPartners(nextPartners.filter((partner) => partner.status === "active"));
+          setEventTopics(nextTopics.filter((topic) => topic.status === "active"));
           setContributors(
             nextUsers.filter(
               (user) => user.status === "active" && user.roles.includes("contributor"),
@@ -113,6 +121,7 @@ export function AdminKnowledgeUploadPanel() {
       let changed = false;
       for (const label of sessionDetail.unknown_labels) {
         const existingPartner = findPartnerByLabel(label, partners);
+        const existingTopic = findEventTopicByLabel(label, eventTopics);
         const choice = next[label];
         if (existingPartner && (!choice || (choice.action === "existing_partner" && !choice.partnerId))) {
           next[label] = {
@@ -121,11 +130,20 @@ export function AdminKnowledgeUploadPanel() {
             partnerId: existingPartner.partner_id,
           };
           changed = true;
+        } else if (existingTopic && !choice) {
+          next[label] = {
+            action: "existing_topic",
+            partnerId: "",
+            topicId: existingTopic.topic_id,
+            newTopicName: label,
+            newPartnerName: label,
+          };
+          changed = true;
         }
       }
       return changed ? next : current;
     });
-  }, [partners, sessionDetail?.unknown_labels]);
+  }, [eventTopics, partners, sessionDetail?.unknown_labels]);
 
   const activeCandidates = useMemo(
     () =>
@@ -182,7 +200,7 @@ export function AdminKnowledgeUploadPanel() {
       setSessionDetail(detail);
       setSelectedCandidateIds(new Set());
       setCurrentPartnerIndex(0);
-      setResolveChoices(defaultResolveChoices(detail.unknown_labels, partners));
+      setResolveChoices(defaultResolveChoices(detail.unknown_labels, partners, eventTopics));
       setNotice(`${detail.session.update_count} candidate update(s) extracted for review.`);
       setStep("confirm");
     } catch (error) {
@@ -231,11 +249,20 @@ export function AdminKnowledgeUploadPanel() {
       setError(`Choose an assigned contributor before creating ${missingContributorLabel}.`);
       return;
     }
+    const missingTopicLabel = sessionDetail.unknown_labels.find((label) => {
+      const choice = resolveChoices[label];
+      return choice?.action === "existing_topic" && !choice.topicId;
+    });
+    if (missingTopicLabel) {
+      setError(`Choose an Events/Topics label for ${missingTopicLabel}.`);
+      return;
+    }
 
     setReviewSaving(true);
     setError(null);
     try {
       const createdPartners: AdminPartner[] = [];
+      let createdOrReusedTopic = false;
       const mappings: KnowledgeUploadMappingDecision[] = [];
       for (const label of sessionDetail.unknown_labels) {
         const choice = resolveChoices[label] ?? { action: "skip", partnerId: "" };
@@ -266,6 +293,23 @@ export function AdminKnowledgeUploadPanel() {
           });
           continue;
         }
+        if (choice.action === "existing_topic") {
+          mappings.push({
+            raw_label: label,
+            action: "existing_topic",
+            topic_id: choice.topicId || null,
+          });
+          continue;
+        }
+        if (choice.action === "new_topic") {
+          createdOrReusedTopic = true;
+          mappings.push({
+            raw_label: label,
+            action: "new_topic",
+            topic_name: choice.newTopicName?.trim() || label,
+          });
+          continue;
+        }
         mappings.push({
           raw_label: label,
           action: choice.action,
@@ -282,6 +326,9 @@ export function AdminKnowledgeUploadPanel() {
             left.name.localeCompare(right.name),
           ),
         );
+      }
+      if (createdOrReusedTopic) {
+        setEventTopics(await listAdminEventTopics());
       }
       setSessionDetail(nextDetail);
       setCurrentPartnerIndex(0);
@@ -480,6 +527,7 @@ export function AdminKnowledgeUploadPanel() {
               contributors={contributors}
               detail={sessionDetail}
               disabled={reviewSaving}
+              eventTopics={eventTopics}
               partners={partners}
               onBack={() => setStep("confirm")}
               onChoiceChange={(label, choice) =>
@@ -712,6 +760,7 @@ function ResolveStep({
   contributors,
   detail,
   disabled,
+  eventTopics,
   partners,
   onBack,
   onChoiceChange,
@@ -721,6 +770,7 @@ function ResolveStep({
   contributors: AdminUser[];
   detail: KnowledgeUploadSessionDetail;
   disabled: boolean;
+  eventTopics: AdminEventTopic[];
   partners: AdminPartner[];
   onBack: () => void;
   onChoiceChange: (label: string, choice: ResolveChoice) => void;
@@ -754,7 +804,8 @@ function ResolveStep({
               >
                 <option value="existing_partner">Map to existing partner</option>
                 <option value="create_partner">Create partner</option>
-                <option value="new_topic">Store in Events/Topics</option>
+                <option value="existing_topic">Map to existing Events/Topics</option>
+                <option value="new_topic">Store as new Events/Topics</option>
                 <option value="skip">Skip as noise</option>
               </select>
               {choice.action === "create_partner" ? (
@@ -787,6 +838,35 @@ function ResolveStep({
                     ))}
                   </select>
                 </div>
+              ) : choice.action === "existing_topic" ? (
+                <select
+                  disabled={disabled}
+                  value={choice.topicId ?? ""}
+                  onChange={(event) =>
+                    onChoiceChange(label, {
+                      ...choice,
+                      topicId: event.target.value,
+                    })
+                  }
+                >
+                  <option value="">Choose Events/Topics</option>
+                  {eventTopics.map((topic) => (
+                    <option key={topic.topic_id} value={topic.topic_id}>
+                      {topic.name}
+                    </option>
+                  ))}
+                </select>
+              ) : choice.action === "new_topic" ? (
+                <input
+                  disabled={disabled}
+                  value={choice.newTopicName ?? label}
+                  onChange={(event) =>
+                    onChoiceChange(label, {
+                      ...choice,
+                      newTopicName: event.target.value,
+                    })
+                  }
+                />
               ) : (
                 <select
                   disabled={disabled || choice.action !== "existing_partner"}
@@ -1520,16 +1600,30 @@ function groupApprovedSummary(candidates: KnowledgeUploadCandidate[]) {
 }
 
 function topicCandidateLabel(candidate: KnowledgeUploadCandidate) {
-  return candidate.raw_label?.trim() || "Events/Topics";
+  return candidate.topic_name?.trim() || candidate.raw_label?.trim() || "Events/Topics";
 }
 
 function defaultResolveChoices(
   labels: string[],
   partners: AdminPartner[],
+  eventTopics: AdminEventTopic[],
 ): Record<string, ResolveChoice> {
   return Object.fromEntries(
     labels.map((label) => {
       const existingPartner = findPartnerByLabel(label, partners);
+      const existingTopic = findEventTopicByLabel(label, eventTopics);
+      if (existingTopic && !existingPartner) {
+        return [
+          label,
+          {
+            action: "existing_topic",
+            partnerId: "",
+            topicId: existingTopic.topic_id,
+            newPartnerName: label,
+            newTopicName: label,
+          },
+        ];
+      }
       return [
         label,
         {
@@ -1539,6 +1633,16 @@ function defaultResolveChoices(
         },
       ];
     }),
+  );
+}
+
+function findEventTopicByLabel(label: string, eventTopics: AdminEventTopic[]) {
+  const normalizedLabel = normalizePartnerLabel(label);
+  if (!normalizedLabel) {
+    return null;
+  }
+  return (
+    eventTopics.find((topic) => normalizePartnerLabel(topic.name) === normalizedLabel) ?? null
   );
 }
 

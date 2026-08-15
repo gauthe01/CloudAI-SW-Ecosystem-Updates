@@ -42,6 +42,8 @@ class KnowledgeUploadCandidateResponse(BaseModel):
     upload_id: uuid.UUID
     partner_id: uuid.UUID | None
     partner_name: str | None
+    topic_id: uuid.UUID | None = None
+    topic_name: str | None = None
     cycle_month: date | None
     raw_label: str | None
     summary: str
@@ -111,6 +113,8 @@ class KnowledgeUploadMappingDecision(BaseModel):
     raw_label: str
     action: str
     partner_id: uuid.UUID | None = None
+    topic_id: uuid.UUID | None = None
+    topic_name: str | None = Field(default=None, max_length=160)
 
 
 class KnowledgeUploadMappingsRequest(BaseModel):

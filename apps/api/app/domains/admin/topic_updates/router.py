@@ -5,7 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.identity import RoleType
 from app.db.session import get_db_session
-from app.domains.admin.topic_updates.schemas import AdminTopicUpdateListResponse
+from app.domains.admin.topic_updates.schemas import (
+    AdminEventTopicListResponse,
+    AdminTopicUpdateListResponse,
+)
 from app.domains.admin.topic_updates.service import AdminTopicUpdateService
 from app.domains.identity.dependencies import require_roles
 from app.domains.identity.schemas import UserResponse
@@ -27,3 +30,11 @@ async def list_topic_updates(
     search: Annotated[str | None, Query(max_length=120)] = None,
 ) -> AdminTopicUpdateListResponse:
     return await service.list_topic_updates(cycle=cycle, search=search)
+
+
+@router.get("/catalog", response_model=AdminEventTopicListResponse)
+async def list_event_topics(
+    service: Annotated[AdminTopicUpdateService, Depends(get_admin_topic_update_service)],
+    _: Annotated[UserResponse, Depends(require_roles(RoleType.admin))],
+) -> AdminEventTopicListResponse:
+    return await service.list_event_topics()

@@ -1,8 +1,10 @@
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.topic_update import TopicUpdate, TopicUpdateStatus
+from app.db.models.topic_update import EventTopic, EventTopicStatus, TopicUpdate, TopicUpdateStatus
 from app.domains.admin.topic_updates.schemas import (
+    AdminEventTopicListResponse,
+    AdminEventTopicResponse,
     AdminTopicUpdateListResponse,
     AdminTopicUpdateResponse,
 )
@@ -12,6 +14,16 @@ from app.domains.contributor.metadata.service import format_cycle_month, parse_c
 class AdminTopicUpdateService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
+
+    async def list_event_topics(self) -> AdminEventTopicListResponse:
+        result = await self.db.execute(
+            select(EventTopic)
+            .where(EventTopic.status == EventTopicStatus.active.value)
+            .order_by(EventTopic.name.asc())
+        )
+        return AdminEventTopicListResponse(
+            topics=[self._topic_to_response(topic) for topic in result.scalars().all()]
+        )
 
     async def list_topic_updates(
         self,
@@ -53,6 +65,7 @@ class AdminTopicUpdateService:
     def _to_response(self, topic: TopicUpdate) -> AdminTopicUpdateResponse:
         return AdminTopicUpdateResponse(
             topic_update_id=topic.topic_update_id,
+            topic_id=topic.topic_id,
             topic_label=topic.topic_label,
             cycle=format_cycle_month(topic.cycle_month),
             title=topic.title,
@@ -63,6 +76,16 @@ class AdminTopicUpdateService:
             status=topic.status,
             approved_at=topic.approved_at,
             approved_by=topic.approved_by,
+            created_at=topic.created_at,
+            updated_at=topic.updated_at,
+        )
+
+    def _topic_to_response(self, topic: EventTopic) -> AdminEventTopicResponse:
+        return AdminEventTopicResponse(
+            topic_id=topic.topic_id,
+            name=topic.name,
+            normalized_name=topic.normalized_name,
+            status=topic.status,
             created_at=topic.created_at,
             updated_at=topic.updated_at,
         )

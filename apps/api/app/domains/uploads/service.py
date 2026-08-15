@@ -30,7 +30,7 @@ from app.db.models.partner_update import (
     PartnerUpdateStatus,
 )
 from app.db.models.source_event import AgentRun, AgentRunStatus
-from app.db.models.topic_update import TopicUpdate, TopicUpdateStatus
+from app.db.models.topic_update import EventTopic, EventTopicStatus, TopicUpdate, TopicUpdateStatus
 from app.domains.identity.schemas import UserResponse
 from app.domains.uploads.analyzer import build_knowledge_upload_candidates
 from app.domains.uploads.schemas import (
@@ -116,6 +116,7 @@ class KnowledgeUploadService:
         await self.db.flush()
 
         active_partners = await self._load_active_partners()
+        active_event_topics = await self._load_active_event_topics()
         agent = KnowledgeUploadAgent()
         uploads: list[KnowledgeUpload] = []
         candidates: list[KnowledgeUploadCandidate] = []
@@ -162,6 +163,8 @@ class KnowledgeUploadService:
             for candidate in result.candidates:
                 self.db.add(candidate)
                 candidates.append(candidate)
+
+        self._auto_resolve_event_topics(candidates, active_event_topics)
 
         agent_run = AgentRun(
             run_type="knowledge_upload_extraction",
@@ -229,6 +232,7 @@ class KnowledgeUploadService:
         *,
         session_id: uuid.UUID,
         mappings: list,
+        current_user: UserResponse,
     ) -> KnowledgeUploadSessionDetailResponse:
         await self._get_session_or_404(session_id)
         candidates = await self._load_session_candidate_models(session_id)
@@ -251,11 +255,36 @@ class KnowledgeUploadService:
                 await self._get_active_partner_name_or_404(mapping.partner_id)
                 for candidate in rows:
                     candidate.partner_id = mapping.partner_id
+                    candidate.topic_id = None
                     candidate.review_status = review_status_for_candidate(candidate)
                     candidate.parser_notes = parser_note_for_candidate(candidate)
                     candidate.updated_at = datetime.now(UTC)
-            elif action == "new_topic":
+            elif action == "existing_topic":
+                topic_id = getattr(mapping, "topic_id", None)
+                if topic_id is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Choose an Events/Topics label for {label}.",
+                    )
+                topic = await self._get_active_event_topic_or_404(topic_id)
                 for candidate in rows:
+                    candidate.topic_id = topic.topic_id
+                    candidate.raw_label = topic.name
+                    candidate.partner_id = None
+                    candidate.review_status = (
+                        KnowledgeUploadCandidateReviewStatus.topic_pending.value
+                    )
+                    candidate.status = KnowledgeUploadCandidateStatus.pending.value
+                    candidate.parser_notes = "Mapped to existing Events/Topics label."
+                    candidate.updated_at = datetime.now(UTC)
+            elif action == "new_topic":
+                topic = await self._get_or_create_event_topic(
+                    getattr(mapping, "topic_name", None) or label,
+                    created_by=current_user.user_id,
+                )
+                for candidate in rows:
+                    candidate.topic_id = topic.topic_id
+                    candidate.raw_label = topic.name
                     candidate.review_status = (
                         KnowledgeUploadCandidateReviewStatus.topic_pending.value
                     )
@@ -265,6 +294,7 @@ class KnowledgeUploadService:
                     candidate.updated_at = datetime.now(UTC)
             elif action in {"skip", "noise"}:
                 for candidate in rows:
+                    candidate.topic_id = None
                     candidate.review_status = (
                         KnowledgeUploadCandidateReviewStatus.likely_noise.value
                     )
@@ -313,6 +343,8 @@ class KnowledgeUploadService:
         if summary is not None:
             candidate.summary = clean_required(summary, "Candidate summary")
         candidate.partner_id = partner_id
+        if partner_id is not None:
+            candidate.topic_id = None
         candidate.cycle_month = cycle_month
         candidate.review_status = review_status_for_candidate(candidate)
         candidate.parser_notes = parser_note_for_candidate(candidate)
@@ -332,7 +364,8 @@ class KnowledgeUploadService:
             candidate.status = status_value.value
         candidate.updated_at = datetime.now(UTC)
         await self.db.commit()
-        return self._candidate_to_response(candidate, partner_name)
+        topic_name = await self._get_event_topic_name(candidate.topic_id)
+        return self._candidate_to_response(candidate, partner_name, topic_name)
 
     async def dismiss_admin_session_candidate(
         self,
@@ -345,7 +378,8 @@ class KnowledgeUploadService:
         candidate.updated_at = datetime.now(UTC)
         await self.db.commit()
         partner_name = await self._get_partner_name(candidate.partner_id)
-        return self._candidate_to_response(candidate, partner_name)
+        topic_name = await self._get_event_topic_name(candidate.topic_id)
+        return self._candidate_to_response(candidate, partner_name, topic_name)
 
     async def commit_admin_session(
         self,
@@ -390,8 +424,13 @@ class KnowledgeUploadService:
                     continue
 
                 upload = upload_lookup.get(candidate.upload_id)
+                event_topic = await self._event_topic_for_candidate(
+                    candidate,
+                    created_by=current_user.user_id,
+                )
                 topic_update = TopicUpdate(
-                    topic_label=topic_label_for_candidate(candidate),
+                    topic_id=event_topic.topic_id,
+                    topic_label=event_topic.name,
                     cycle_month=candidate.cycle_month,
                     title=build_update_title(candidate.summary),
                     summary=candidate.summary,
@@ -574,7 +613,8 @@ class KnowledgeUploadService:
         candidate.updated_at = datetime.now(UTC)
         await self.db.commit()
         partner_name = await self._get_partner_name(candidate.partner_id)
-        return self._candidate_to_response(candidate, partner_name)
+        topic_name = await self._get_event_topic_name(candidate.topic_id)
+        return self._candidate_to_response(candidate, partner_name, topic_name)
 
     async def stage_admin_candidates(
         self,
@@ -622,6 +662,8 @@ class KnowledgeUploadService:
         if summary is not None:
             candidate.summary = clean_required(summary, "Candidate summary")
         candidate.partner_id = partner_id
+        if partner_id is not None:
+            candidate.topic_id = None
         candidate.cycle_month = cycle_month
         candidate.review_status = review_status_for_candidate(candidate)
         if status_value is not None:
@@ -629,7 +671,8 @@ class KnowledgeUploadService:
         candidate.parser_notes = parser_note_for_candidate(candidate)
         candidate.updated_at = datetime.now(UTC)
         await self.db.commit()
-        return self._candidate_to_response(candidate, partner_name)
+        topic_name = await self._get_event_topic_name(candidate.topic_id)
+        return self._candidate_to_response(candidate, partner_name, topic_name)
 
     async def _create_upload_record(
         self,
@@ -741,6 +784,108 @@ class KnowledgeUploadService:
         )
         return list(result.scalars().all())
 
+    async def _load_active_event_topics(self) -> list[EventTopic]:
+        result = await self.db.execute(
+            select(EventTopic)
+            .where(EventTopic.status == EventTopicStatus.active.value)
+            .order_by(EventTopic.name.asc())
+        )
+        return list(result.scalars().all())
+
+    async def _get_active_event_topic_or_404(self, topic_id: uuid.UUID) -> EventTopic:
+        result = await self.db.execute(
+            select(EventTopic)
+            .where(EventTopic.topic_id == topic_id)
+            .where(EventTopic.status == EventTopicStatus.active.value)
+        )
+        topic = result.scalar_one_or_none()
+        if topic is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Events/Topics label not found.",
+            )
+        return topic
+
+    async def _get_event_topic_name(self, topic_id: uuid.UUID | None) -> str | None:
+        if topic_id is None:
+            return None
+        result = await self.db.execute(
+            select(EventTopic.name).where(EventTopic.topic_id == topic_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def _get_or_create_event_topic(
+        self,
+        name: str,
+        *,
+        created_by: uuid.UUID | None,
+    ) -> EventTopic:
+        cleaned = clean_required(name, "Events/Topics label")[:160]
+        normalized = normalize_event_topic_name(cleaned)
+        result = await self.db.execute(
+            select(EventTopic).where(EventTopic.normalized_name == normalized)
+        )
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            if existing.status != EventTopicStatus.active.value:
+                existing.status = EventTopicStatus.active.value
+                existing.updated_at = datetime.now(UTC)
+            return existing
+        now = datetime.now(UTC)
+        topic = EventTopic(
+            name=cleaned,
+            normalized_name=normalized,
+            status=EventTopicStatus.active.value,
+            created_by=created_by,
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(topic)
+        await self.db.flush()
+        return topic
+
+    async def _event_topic_for_candidate(
+        self,
+        candidate: KnowledgeUploadCandidate,
+        *,
+        created_by: uuid.UUID | None,
+    ) -> EventTopic:
+        if candidate.topic_id is not None:
+            return await self._get_active_event_topic_or_404(candidate.topic_id)
+        return await self._get_or_create_event_topic(
+            topic_label_for_candidate(candidate),
+            created_by=created_by,
+        )
+
+    def _auto_resolve_event_topics(
+        self,
+        candidates: list[KnowledgeUploadCandidate],
+        active_event_topics: list[EventTopic],
+    ) -> None:
+        topic_lookup = {
+            normalize_event_topic_name(topic.name): topic
+            for topic in active_event_topics
+            if topic.status == EventTopicStatus.active.value
+        }
+        for candidate in candidates:
+            if (
+                candidate.partner_id is not None
+                or candidate.review_status
+                != KnowledgeUploadCandidateReviewStatus.needs_mapping.value
+                or candidate.status != KnowledgeUploadCandidateStatus.pending.value
+            ):
+                continue
+            raw_label = clean_optional(candidate.raw_label)
+            if raw_label is None:
+                continue
+            topic = topic_lookup.get(normalize_event_topic_name(raw_label))
+            if topic is None:
+                continue
+            candidate.topic_id = topic.topic_id
+            candidate.raw_label = topic.name
+            candidate.review_status = KnowledgeUploadCandidateReviewStatus.topic_pending.value
+            candidate.parser_notes = "Matched existing Events/Topics label."
+
     async def _analyze_admin_upload(
         self,
         upload: KnowledgeUpload,
@@ -767,8 +912,9 @@ class KnowledgeUploadService:
         upload_id: uuid.UUID,
     ) -> list[KnowledgeUploadCandidateResponse]:
         result = await self.db.execute(
-            select(KnowledgeUploadCandidate, Partner.name)
+            select(KnowledgeUploadCandidate, Partner.name, EventTopic.name)
             .outerjoin(Partner, Partner.partner_id == KnowledgeUploadCandidate.partner_id)
+            .outerjoin(EventTopic, EventTopic.topic_id == KnowledgeUploadCandidate.topic_id)
             .where(KnowledgeUploadCandidate.upload_id == upload_id)
             .order_by(
                 KnowledgeUploadCandidate.created_at.asc(),
@@ -776,8 +922,8 @@ class KnowledgeUploadService:
             )
         )
         return [
-            self._candidate_to_response(candidate, partner_name)
-            for candidate, partner_name in result.all()
+            self._candidate_to_response(candidate, partner_name, topic_name)
+            for candidate, partner_name, topic_name in result.all()
         ]
 
     async def _list_session_uploads(
@@ -802,18 +948,20 @@ class KnowledgeUploadService:
         session_id: uuid.UUID,
     ) -> list[KnowledgeUploadCandidateResponse]:
         result = await self.db.execute(
-            select(KnowledgeUploadCandidate, Partner.name)
+            select(KnowledgeUploadCandidate, Partner.name, EventTopic.name)
             .outerjoin(Partner, Partner.partner_id == KnowledgeUploadCandidate.partner_id)
+            .outerjoin(EventTopic, EventTopic.topic_id == KnowledgeUploadCandidate.topic_id)
             .where(KnowledgeUploadCandidate.session_id == session_id)
             .order_by(
                 Partner.name.asc().nullslast(),
+                EventTopic.name.asc().nullslast(),
                 KnowledgeUploadCandidate.created_at.asc(),
                 KnowledgeUploadCandidate.candidate_id.asc(),
             )
         )
         return [
-            self._candidate_to_response(candidate, partner_name)
-            for candidate, partner_name in result.all()
+            self._candidate_to_response(candidate, partner_name, topic_name)
+            for candidate, partner_name, topic_name in result.all()
         ]
 
     async def _load_session_candidate_models(
@@ -1014,6 +1162,7 @@ class KnowledgeUploadService:
         self,
         candidate: KnowledgeUploadCandidate,
         partner_name: str | None,
+        topic_name: str | None = None,
     ) -> KnowledgeUploadCandidateResponse:
         return KnowledgeUploadCandidateResponse(
             candidate_id=candidate.candidate_id,
@@ -1021,6 +1170,8 @@ class KnowledgeUploadService:
             upload_id=candidate.upload_id,
             partner_id=candidate.partner_id,
             partner_name=partner_name,
+            topic_id=candidate.topic_id,
+            topic_name=topic_name,
             cycle_month=candidate.cycle_month,
             raw_label=candidate.raw_label,
             summary=candidate.summary,
@@ -1084,6 +1235,10 @@ def html_to_plain_text(value: str) -> str:
 
 def normalize_spacing(value: str) -> str:
     return " ".join(value.split())
+
+
+def normalize_event_topic_name(value: str) -> str:
+    return normalize_spacing(value).lower()[:180]
 
 
 def build_session_summary(session: KnowledgeUploadSession) -> str:
@@ -1204,5 +1359,9 @@ def topic_label_for_candidate(candidate: KnowledgeUploadCandidate) -> str:
 
 
 def topic_label_for_response(candidate: KnowledgeUploadCandidateResponse) -> str:
-    label = clean_optional(candidate.raw_label) or clean_optional(candidate.section_label)
+    label = (
+        clean_optional(candidate.topic_name)
+        or clean_optional(candidate.raw_label)
+        or clean_optional(candidate.section_label)
+    )
     return (label or "Events/Topics")[:160]

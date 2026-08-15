@@ -43,6 +43,8 @@ export type KnowledgeUploadCandidate = {
   upload_id: string;
   partner_id: string | null;
   partner_name: string | null;
+  topic_id: string | null;
+  topic_name: string | null;
   cycle_month: string | null;
   raw_label: string | null;
   summary: string;
@@ -106,8 +108,10 @@ export type KnowledgeUploadSessionDetail = {
 
 export type KnowledgeUploadMappingDecision = {
   raw_label: string;
-  action: "existing_partner" | "skip" | "noise" | "new_topic";
+  action: "existing_partner" | "skip" | "noise" | "existing_topic" | "new_topic";
   partner_id?: string | null;
+  topic_id?: string | null;
+  topic_name?: string | null;
 };
 
 export type KnowledgeUploadCommitResponse = {

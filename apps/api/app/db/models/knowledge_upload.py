@@ -176,6 +176,12 @@ class KnowledgeUploadCandidate(Base):
         nullable=True,
         index=True,
     )
+    topic_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_topics.topic_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     cycle_month: Mapped[date | None] = mapped_column(Date(), nullable=True, index=True)
     raw_label: Mapped[str | None] = mapped_column(String(300), nullable=True, index=True)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
@@ -226,6 +232,11 @@ Index(
 Index(
     "ix_knowledge_upload_candidates_partner_cycle",
     "partner_id",
+    "cycle_month",
+)
+Index(
+    "ix_knowledge_upload_candidates_topic_cycle",
+    "topic_id",
     "cycle_month",
 )
 

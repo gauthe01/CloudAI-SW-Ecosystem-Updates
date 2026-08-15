@@ -14,6 +14,45 @@ class TopicUpdateStatus(StrEnum):
     archived = "archived"
 
 
+class EventTopicStatus(StrEnum):
+    active = "active"
+    archived = "archived"
+
+
+class EventTopic(Base):
+    __tablename__ = "event_topics"
+
+    topic_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(180), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=EventTopicStatus.active.value,
+        index=True,
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
 class TopicUpdate(Base):
     __tablename__ = "topic_updates"
 
@@ -21,6 +60,12 @@ class TopicUpdate(Base):
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
+    )
+    topic_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_topics.topic_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     topic_label: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
     cycle_month: Mapped[date] = mapped_column(Date(), nullable=False, index=True)
@@ -60,5 +105,7 @@ class TopicUpdate(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+Index("ix_event_topics_status_name", "status", "name")
 Index("ix_topic_updates_topic_cycle_status", "topic_label", "cycle_month", "status")
+Index("ix_topic_updates_topic_id_cycle_status", "topic_id", "cycle_month", "status")
 Index("ix_topic_updates_source_event_key", "source_event_key", unique=True)
