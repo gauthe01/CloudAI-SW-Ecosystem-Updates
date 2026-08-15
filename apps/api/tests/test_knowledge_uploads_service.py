@@ -463,7 +463,12 @@ def docx_bytes(paragraphs: list[str]) -> bytes:
     return buffer.getvalue()
 
 
-DocxListItem = tuple[str, int | None, str | None] | tuple[str, int | None, str | None, str]
+DocxInlineRuns = list[tuple[str, str | None]]
+DocxListItem = (
+    tuple[str, int | None, str | None]
+    | tuple[str, int | None, str | None, str]
+    | tuple[DocxInlineRuns, int | None, str | None]
+)
 
 
 def docx_list_bytes(items: list[DocxListItem]) -> bytes:
@@ -502,6 +507,103 @@ def docx_list_bytes(items: list[DocxListItem]) -> bytes:
         '<w:document xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
         'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
         f"<w:body>{''.join(body_parts)}</w:body>"
+        "</w:document>"
+    )
+    rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f"{''.join(rel_parts)}"
+        "</Relationships>"
+    )
+    buffer = BytesIO()
+    with ZipFile(buffer, "w") as package:
+        package.writestr("word/document.xml", document_xml)
+        package.writestr("word/_rels/document.xml.rels", rels_xml)
+    return buffer.getvalue()
+
+
+def docx_partner_update_table_bytes(
+    rows: list[tuple[str, str, list[DocxListItem]]],
+) -> bytes:
+    body_parts: list[str] = []
+    rel_parts: list[str] = []
+    rel_counter = 1
+
+    def paragraph_xml(
+        text: str | DocxInlineRuns,
+        level: int | None = None,
+        link: str | None = None,
+    ) -> str:
+        nonlocal rel_counter
+        if isinstance(text, list):
+            run_xml_parts = []
+            for run_text, run_link in text:
+                run_xml = f"<w:r><w:t>{escape(run_text)}</w:t></w:r>"
+                if run_link:
+                    rel_id = f"rId{rel_counter}"
+                    rel_counter += 1
+                    run_xml = f'<w:hyperlink r:id="{rel_id}">{run_xml}</w:hyperlink>'
+                    rel_parts.append(
+                        f'<Relationship Id="{rel_id}" '
+                        'Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+                        'relationships/hyperlink" '
+                        f'Target="{escape(run_link)}" TargetMode="External"/>'
+                    )
+                run_xml_parts.append(run_xml)
+            run_xml = "".join(run_xml_parts)
+        else:
+            run_xml = f"<w:r><w:t>{escape(text)}</w:t></w:r>"
+            if link:
+                rel_id = f"rId{rel_counter}"
+                rel_counter += 1
+                run_xml = f'<w:hyperlink r:id="{rel_id}">{run_xml}</w:hyperlink>'
+                rel_parts.append(
+                    f'<Relationship Id="{rel_id}" '
+                    'Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+                    'relationships/hyperlink" '
+                    f'Target="{escape(link)}" TargetMode="External"/>'
+                )
+        if level is None:
+            return f"<w:p>{run_xml}</w:p>"
+        return (
+            "<w:p>"
+            "<w:pPr>"
+            '<w:pStyle w:val="ListParagraph"/>'
+            "<w:numPr>"
+            f'<w:ilvl w:val="{level}"/>'
+            '<w:numId w:val="16"/>'
+            "</w:numPr>"
+            "</w:pPr>"
+            f"{run_xml}"
+            "</w:p>"
+        )
+
+    def cell_xml(paragraphs: list[DocxListItem] | list[tuple[str, None, None]]) -> str:
+        return f"<w:tc>{''.join(paragraph_xml(*item[:3]) for item in paragraphs)}</w:tc>"
+
+    header = (
+        "<w:tr>"
+        f"{cell_xml([('Partner Category', None, None)])}"
+        f"{cell_xml([('Company', None, None)])}"
+        f"{cell_xml([('Update', None, None)])}"
+        "</w:tr>"
+    )
+    body_parts.append(header)
+    for category, company, updates in rows:
+        body_parts.append(
+            "<w:tr>"
+            f"{cell_xml([(category, None, None)])}"
+            f"{cell_xml([(company, None, None)])}"
+            f"{cell_xml(updates)}"
+            "</w:tr>"
+        )
+
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/'
+        'relationships" '
+        'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body><w:tbl>{''.join(body_parts)}</w:tbl></w:body>"
         "</w:document>"
     )
     rels_xml = (
@@ -971,6 +1073,100 @@ def test_knowledge_upload_analyzer_strips_inline_partner_prefix_from_update(tmp_
     assert candidates[0].raw_label == "Salesforce"
     assert candidates[0].summary.startswith("Multiple services moved to Graviton")
     assert not candidates[0].summary.startswith("Salesforce:")
+
+
+def test_knowledge_upload_analyzer_preserves_docx_table_cell_bullet_structure(
+    tmp_path,
+) -> None:
+    google_id = uuid.uuid4()
+    source = tmp_path / "Software EcosystemMonthly Status Report_July 24 2026.docx"
+    source.write_bytes(
+        docx_partner_update_table_bytes(
+            [
+                (
+                    "CSP",
+                    "Google Cloud",
+                    [
+                        ("Last Quarterly Technical Review (QTR) readout and ARs", 0, None),
+                        (
+                            "Prepared communication about personnel changes in Arm team "
+                            "covering Google",
+                            1,
+                            None,
+                        ),
+                        ("Next QTR is tentatively scheduled for Sept. 2026", 1, None),
+                        (
+                            "We will be discussing QTR cadence and other technical workstreams "
+                            "at APM",
+                            2,
+                            None,
+                        ),
+                        ("Held SW interlock call to cover ARs from last QTR", 0, None),
+                        (
+                            "Started bi-weekly calls with Google Cloud product marketing team",
+                            0,
+                            None,
+                        ),
+                        (
+                            "Axion family GTM deliverables tracker",
+                            1,
+                            "https://example.com/google-gtm",
+                        ),
+                        (
+                            "Vertex AI is now a part of Gemini Enterprise Agent Platform "
+                            "and generally available on Axion is GA",
+                            0,
+                            None,
+                        ),
+                        (
+                            [
+                                (
+                                    "There was no public announcement that we can support with ",
+                                    None,
+                                ),
+                                ("updated LLM benchmarks", "https://example.com/llm"),
+                            ],
+                            1,
+                            None,
+                        ),
+                    ],
+                )
+            ]
+        )
+    )
+
+    candidates = build_knowledge_upload_candidates(
+        file_path=source,
+        original_filename=source.name,
+        upload_id=uuid.uuid4(),
+        selected_partner_id=None,
+        active_partners=[
+            Partner(partner_id=google_id, name="Google", status=PartnerStatus.active.value)
+        ],
+        description=None,
+    )
+
+    assert len(candidates) == 4
+    assert all(candidate.partner_id == google_id for candidate in candidates)
+    assert all(candidate.review_status == "ready" for candidate in candidates)
+    assert "Last Quarterly Technical Review" in candidates[0].summary
+    assert "<ul><li>Prepared communication" in candidates[0].summary
+    assert "<li>We will be discussing QTR cadence" in candidates[0].summary
+    assert "<p>Held SW interlock call to cover ARs from last QTR</p>" == candidates[1].summary
+    assert "Started bi-weekly calls" in candidates[2].summary
+    assert '<a href="https://example.com/google-gtm"' in candidates[2].summary
+    assert "Vertex AI is now a part" in candidates[3].summary
+    assert (
+        'There was no public announcement that we can support with <a href="https://example.com/llm"'
+        in candidates[3].summary
+    )
+    assert (
+        '<a href="https://example.com/llm" target="_blank" rel="noopener noreferrer">'
+        "There was no public announcement"
+        not in candidates[3].summary
+    )
+    assert "Held SW interlock call" not in candidates[0].summary
+    assert "Parsed from partner update table." in (candidates[0].parser_notes or "")
 
 
 def test_knowledge_upload_analyzer_extracts_google_workstream_pptx_rows(tmp_path) -> None:

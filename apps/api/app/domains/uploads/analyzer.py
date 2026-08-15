@@ -144,6 +144,23 @@ class DocxOutlineNode:
     num_id: str | None
     links: list[str]
     children: list[DocxOutlineNode]
+    html: str | None = None
+
+
+@dataclass(frozen=True)
+class DocxTableCellParagraph:
+    text: str
+    level: int | None
+    num_id: str | None
+    links: tuple[str, ...] = ()
+    html: str | None = None
+
+
+@dataclass(frozen=True)
+class DocxTableCell:
+    text: str
+    paragraphs: tuple[DocxTableCellParagraph, ...]
+    links: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -299,6 +316,7 @@ def is_structured_update_block(block: ParsedBlock) -> bool:
         (
             "docx_outline",
             "docx_topic",
+            "docx_table_update",
             "pptx_google_workstream",
             "pptx_microsoft_workstream",
         )
@@ -438,6 +456,7 @@ def parse_docx_blocks(file_path: Path) -> list[ParsedBlock]:
         level: int,
         num_id: str | None,
         links: list[str],
+        html: str | None = None,
     ) -> None:
         nonlocal current_update
         nonlocal update_stack
@@ -448,6 +467,7 @@ def parse_docx_blocks(file_path: Path) -> list[ParsedBlock]:
             num_id=num_id,
             links=links,
             children=[],
+            html=html,
         )
         update_stack = [current_update]
 
@@ -457,9 +477,10 @@ def parse_docx_blocks(file_path: Path) -> list[ParsedBlock]:
         level: int,
         num_id: str | None,
         links: list[str],
+        html: str | None = None,
     ) -> None:
         if current_update is None:
-            start_update(text=text, level=level, num_id=num_id, links=links)
+            start_update(text=text, level=level, num_id=num_id, links=links, html=html)
             return
         node = DocxOutlineNode(
             text=text,
@@ -467,6 +488,7 @@ def parse_docx_blocks(file_path: Path) -> list[ParsedBlock]:
             num_id=num_id,
             links=links,
             children=[],
+            html=html,
         )
         parent = current_update
         for candidate in reversed(update_stack):
@@ -477,12 +499,13 @@ def parse_docx_blocks(file_path: Path) -> list[ParsedBlock]:
         update_stack[:] = [item for item in update_stack if item.level < level]
         update_stack.append(node)
 
-    def append_continuation(text: str, links: list[str]) -> None:
+    def append_continuation(text: str, links: list[str], html: str | None = None) -> None:
         target = update_stack[-1] if update_stack else current_update
         if target is None:
             return
         target.text = normalize_text(f"{target.text} {text}")
         target.links = sorted(set([*target.links, *links]))
+        target.html = append_docx_inline_html(target.html, html or render_linked_text(text, links))
 
     def is_nested_under_context(level: int) -> bool:
         return context_base_level is not None and level > context_base_level
@@ -495,6 +518,7 @@ def parse_docx_blocks(file_path: Path) -> list[ParsedBlock]:
             text = docx_paragraph_text(element, ns)
             if not text:
                 continue
+            html = docx_paragraph_inline_html(element, rels, ns)
             style_value = docx_paragraph_style(element, ns)
             num_id, list_level = docx_numbering(element, ns)
             is_list_item = list_level is not None
@@ -584,6 +608,7 @@ def parse_docx_blocks(file_path: Path) -> list[ParsedBlock]:
                             level=level,
                             num_id=num_id,
                             links=links,
+                            html=None if inline_text else html,
                         )
                         update_level = level
                         update_num_id = num_id
@@ -611,9 +636,21 @@ def parse_docx_blocks(file_path: Path) -> list[ParsedBlock]:
                             update_level = None
                             update_num_id = None
                             continue
-                        start_update(text=text, level=level, num_id=num_id, links=links)
+                        start_update(
+                            text=text,
+                            level=level,
+                            num_id=num_id,
+                            links=links,
+                            html=html,
+                        )
                     else:
-                        append_descendant(text=text, level=level, num_id=num_id, links=links)
+                        append_descendant(
+                            text=text,
+                            level=level,
+                            num_id=num_id,
+                            links=links,
+                            html=html,
+                        )
                     continue
 
                 if is_partner_label:
@@ -638,7 +675,7 @@ def parse_docx_blocks(file_path: Path) -> list[ParsedBlock]:
                 continue
 
             if current_update is not None:
-                append_continuation(text, links)
+                append_continuation(text, links, html)
                 continue
 
             blocks.append(
@@ -659,6 +696,34 @@ def parse_docx_blocks(file_path: Path) -> list[ParsedBlock]:
 
 def docx_paragraph_text(paragraph: ElementTree.Element, ns: dict[str, str]) -> str:
     return normalize_text("".join(node.text or "" for node in paragraph.findall(".//w:t", ns)))
+
+
+def docx_paragraph_inline_html(
+    paragraph: ElementTree.Element,
+    rels: dict[str, str],
+    ns: dict[str, str],
+) -> str:
+    parts: list[str] = []
+    for child in paragraph:
+        if child.tag == f"{{{ns['w']}}}pPr":
+            continue
+        text = "".join(node.text or "" for node in child.findall(".//w:t", ns))
+        if not text:
+            continue
+        if child.tag == f"{{{ns['w']}}}hyperlink":
+            rel_id = child.attrib.get(f"{{{ns['r']}}}id")
+            href = rels.get(rel_id or "")
+            if href:
+                parts.append(
+                    '<a href="'
+                    f'{html_escape(href, quote=True)}'
+                    '" target="_blank" rel="noopener noreferrer">'
+                    f"{html_escape(text)}"
+                    "</a>"
+                )
+                continue
+        parts.append(render_auto_linked_text(text))
+    return "".join(parts).strip()
 
 
 def docx_paragraph_style(paragraph: ElementTree.Element, ns: dict[str, str]) -> str:
@@ -704,24 +769,159 @@ def docx_table_blocks(
     ns: dict[str, str],
     current_heading: str,
 ) -> list[ParsedBlock]:
-    rows: list[list[str]] = []
-    row_links: list[list[str]] = []
+    rows: list[list[DocxTableCell]] = []
     for row in table.findall("w:tr", ns):
-        values: list[str] = []
-        links: list[str] = []
+        values: list[DocxTableCell] = []
         for cell in row.findall("w:tc", ns):
-            cell_paragraphs = [
-                docx_paragraph_text(paragraph, ns) for paragraph in cell.findall(".//w:p", ns)
-            ]
+            paragraphs: list[DocxTableCellParagraph] = []
+            cell_links: list[str] = []
+            for paragraph in cell.findall(".//w:p", ns):
+                paragraph_text = docx_paragraph_text(paragraph, ns)
+                if not paragraph_text:
+                    continue
+                num_id, list_level = docx_numbering(paragraph, ns)
+                paragraph_links = tuple(docx_links(paragraph, rels, ns))
+                paragraph_html = docx_paragraph_inline_html(paragraph, rels, ns)
+                paragraphs.append(
+                    DocxTableCellParagraph(
+                        text=paragraph_text,
+                        level=list_level,
+                        num_id=num_id,
+                        links=paragraph_links,
+                        html=paragraph_html,
+                    )
+                )
+                cell_links.extend(paragraph_links)
             cell_text = normalize_text(
-                "\n".join(paragraph for paragraph in cell_paragraphs if paragraph)
+                "\n".join(paragraph.text for paragraph in paragraphs if paragraph.text)
             )
-            values.append(cell_text)
-            links.extend(docx_links(cell, rels, ns))
-        if any(values):
+            values.append(
+                DocxTableCell(
+                    text=cell_text,
+                    paragraphs=tuple(paragraphs),
+                    links=tuple(sorted(set(cell_links))),
+                )
+            )
+        if any(value.text for value in values):
             rows.append(values)
-            row_links.append(sorted(set(links)))
-    return table_rows_to_blocks(rows, row_links, current_heading)
+    return docx_table_rows_to_blocks(rows, current_heading)
+
+
+def docx_table_rows_to_blocks(
+    rows: list[list[DocxTableCell]],
+    current_heading: str,
+) -> list[ParsedBlock]:
+    if not rows:
+        return []
+    text_rows = [[cell.text for cell in row] for row in rows]
+    header = [normalize_for_match(value) for value in text_rows[0]]
+    partner_index = find_first_header_index(header, {"company", "partner", "customer"})
+    update_index = find_first_header_index(header, {"update", "updates", "summary", "status"})
+    category_index = find_first_header_index(header, {"category", "partner category", "workstream"})
+    if partner_index is None or update_index is None:
+        row_links = [sorted({link for cell in row for link in cell.links}) for row in rows]
+        return table_rows_to_blocks(text_rows, row_links, current_heading)
+
+    blocks: list[ParsedBlock] = []
+    for index, values in enumerate(rows[1:], start=2):
+        partner_label = table_cell_text_at(values, partner_index)
+        update_cell = table_cell_at(values, update_index)
+        if update_cell is None or not update_cell.text:
+            continue
+        category = (
+            table_cell_text_at(values, category_index)
+            if category_index is not None
+            else current_heading
+        )
+        for update_number, node in enumerate(
+            docx_update_nodes_from_table_cell(update_cell),
+            start=1,
+        ):
+            links = collect_outline_links(node)
+            update_text = render_outline_html(node)
+            blocks.append(
+                ParsedBlock(
+                    text=update_text,
+                    section_label=category or current_heading,
+                    links=links,
+                    raw_label=split_partner_label(partner_label),
+                    outline_path=tuple(
+                        item
+                        for item in [
+                            current_heading,
+                            category,
+                            partner_label,
+                            f"row {index} update {update_number}",
+                            node.text[:120],
+                        ]
+                        if item
+                    ),
+                    block_type="docx_table_update",
+                )
+            )
+    return blocks
+
+
+def table_cell_at(values: list[DocxTableCell], index: int | None) -> DocxTableCell | None:
+    if index is None or index >= len(values):
+        return None
+    return values[index]
+
+
+def table_cell_text_at(values: list[DocxTableCell], index: int | None) -> str:
+    cell = table_cell_at(values, index)
+    return normalize_text(cell.text) if cell else ""
+
+
+def docx_update_nodes_from_table_cell(cell: DocxTableCell) -> list[DocxOutlineNode]:
+    list_paragraphs = [paragraph for paragraph in cell.paragraphs if paragraph.level is not None]
+    if not list_paragraphs:
+        return [
+            DocxOutlineNode(
+                text=paragraph.text,
+                level=0,
+                num_id=paragraph.num_id,
+                links=list(paragraph.links),
+                children=[],
+                html=paragraph.html,
+            )
+            for paragraph in cell.paragraphs
+            if paragraph.text
+        ]
+
+    base_level = min(
+        paragraph.level for paragraph in list_paragraphs if paragraph.level is not None
+    )
+    updates: list[DocxOutlineNode] = []
+    current_update: DocxOutlineNode | None = None
+    stack: list[DocxOutlineNode] = []
+
+    for paragraph in cell.paragraphs:
+        if not paragraph.text:
+            continue
+        level = paragraph.level if paragraph.level is not None else base_level
+        node = DocxOutlineNode(
+            text=paragraph.text,
+            level=level,
+            num_id=paragraph.num_id,
+            links=list(paragraph.links),
+            children=[],
+            html=paragraph.html,
+        )
+        if current_update is None or level <= base_level:
+            updates.append(node)
+            current_update = node
+            stack = [node]
+            continue
+        parent = current_update
+        for candidate in reversed(stack):
+            if candidate.level < level:
+                parent = candidate
+                break
+        parent.children.append(node)
+        stack[:] = [item for item in stack if item.level < level]
+        stack.append(node)
+    return updates
 
 
 def read_docx_relationships(package: zipfile.ZipFile) -> dict[str, str]:
@@ -1382,7 +1582,7 @@ def collect_outline_links(node: DocxOutlineNode) -> list[str]:
 
 
 def render_outline_html(node: DocxOutlineNode) -> str:
-    parts = [f"<p>{render_linked_text(node.text, node.links)}</p>"]
+    parts = [f"<p>{render_docx_node_body(node)}</p>"]
     if node.children:
         parts.append(render_outline_children_html(node.children))
     return "".join(parts)
@@ -1391,11 +1591,17 @@ def render_outline_html(node: DocxOutlineNode) -> str:
 def render_outline_children_html(nodes: list[DocxOutlineNode]) -> str:
     items = []
     for node in nodes:
-        body = render_linked_text(node.text, node.links)
+        body = render_docx_node_body(node)
         if node.children:
             body += render_outline_children_html(node.children)
         items.append(f"<li>{body}</li>")
     return f"<ul>{''.join(items)}</ul>"
+
+
+def render_docx_node_body(node: DocxOutlineNode) -> str:
+    if node.html is not None:
+        return node.html
+    return render_linked_text(node.text, node.links)
 
 
 def render_linked_text(text: str, links: list[str]) -> str:
@@ -1404,6 +1610,30 @@ def render_linked_text(text: str, links: list[str]) -> str:
         return escaped
     href = html_escape(links[0], quote=True)
     return f'<a href="{href}" target="_blank" rel="noopener noreferrer">{escaped}</a>'
+
+
+def render_auto_linked_text(text: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    for match in URL_RE.finditer(text):
+        parts.append(html_escape(text[cursor : match.start()]))
+        href = match.group(0)
+        escaped_href = html_escape(href, quote=True)
+        parts.append(
+            f'<a href="{escaped_href}" target="_blank" rel="noopener noreferrer">'
+            f"{html_escape(href)}</a>"
+        )
+        cursor = match.end()
+    parts.append(html_escape(text[cursor:]))
+    return "".join(parts)
+
+
+def append_docx_inline_html(existing: str | None, addition: str) -> str:
+    if not existing:
+        return addition
+    if not addition:
+        return existing
+    return f"{existing} {addition}"
 
 
 def is_partner_context_label(label: str) -> bool:
@@ -1647,7 +1877,7 @@ def candidate_parser_notes(
         notes.append("Needs partner mapping before staging.")
     if cycle_month is None:
         notes.append("Needs reporting month before staging.")
-    if block.block_type == "table_row":
+    if block.block_type == "table_row" or block.block_type.startswith("docx_table_update"):
         notes.append("Parsed from partner update table.")
     if review_status == "ready" and notes == ["Parsed from partner update table."]:
         return notes[0]
