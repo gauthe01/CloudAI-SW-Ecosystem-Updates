@@ -65,6 +65,7 @@ async def store_upload_file(
     upload_id: uuid.UUID,
     file: UploadFile,
     settings: Settings,
+    storage_prefix: str = "uploads",
 ) -> StoredUpload:
     original_filename = clean_filename(file.filename)
     extension = Path(original_filename).suffix.lower()
@@ -81,7 +82,7 @@ async def store_upload_file(
             detail=f"Unsupported upload storage backend: {settings.file_storage_backend}.",
         )
     max_size_bytes = settings.max_upload_size_mb * 1024 * 1024
-    storage_key = build_storage_key(upload_id, extension)
+    storage_key = build_storage_key(upload_id, extension, storage_prefix=storage_prefix)
     checksum = hashlib.sha256()
     file_size = 0
     preview_bytes = bytearray()
@@ -188,9 +189,26 @@ def clean_filename(filename: str | None) -> str:
     return cleaned
 
 
-def build_storage_key(upload_id: uuid.UUID, extension: str) -> str:
+def build_storage_key(
+    upload_id: uuid.UUID,
+    extension: str,
+    *,
+    storage_prefix: str = "uploads",
+) -> str:
     upload_id_text = str(upload_id)
-    return f"uploads/{upload_id_text[:2]}/{upload_id_text}{extension}"
+    normalized_prefix = clean_storage_prefix(storage_prefix)
+    return f"{normalized_prefix}/{upload_id_text[:2]}/{upload_id_text}{extension}"
+
+
+def clean_storage_prefix(storage_prefix: str) -> str:
+    parts = [
+        part.strip().strip("/")
+        for part in storage_prefix.split("/")
+        if part.strip().strip("/")
+    ]
+    if not parts:
+        return "uploads"
+    return "/".join(parts)
 
 
 def local_storage_path(settings: Settings, storage_key: str) -> Path:

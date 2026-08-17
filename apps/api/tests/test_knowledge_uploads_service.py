@@ -15,6 +15,7 @@ from app.db.models.identity import RoleType, User, UserRoleAssignment, UserSessi
 from app.db.models.knowledge_upload import (
     KnowledgeUpload,
     KnowledgeUploadCandidate,
+    KnowledgeUploadCandidateReviewStatus,
     KnowledgeUploadCandidateStatus,
     KnowledgeUploadSession,
     MemoryChunk,
@@ -100,6 +101,9 @@ async def test_knowledge_uploads_store_metadata_and_enforce_partner_assignment(t
         assert admin_upload.processing_status == "parsed"
         assert admin_upload.text_preview == "Admin knowledge upload notes"
         assert admin_upload.file_size_bytes == 28
+        admin_upload_record = await session.get(KnowledgeUpload, admin_upload.upload_id)
+        assert admin_upload_record is not None
+        assert admin_upload_record.storage_key.startswith("knowledge-uploads/")
 
         mapped_upload = await service.create_admin_upload(
             file=upload_file(
@@ -142,6 +146,11 @@ async def test_knowledge_uploads_store_metadata_and_enforce_partner_assignment(t
         assert contributor_upload.partner_name == partner_name
         assert contributor_upload.scope == "contributor_partner_file"
         assert contributor_upload.text_preview == "# Partner file\nImportant detail"
+        contributor_upload_record = await session.get(KnowledgeUpload, contributor_upload.upload_id)
+        assert contributor_upload_record is not None
+        assert contributor_upload_record.storage_key.startswith(
+            f"contributor-files/{partner.partner_id}/"
+        )
 
         contributor_uploads = await service.list_contributor_partner_uploads(
             partner_id=partner.partner_id,
@@ -288,6 +297,178 @@ async def test_admin_knowledge_upload_session_commits_only_approved_memory(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_admin_knowledge_upload_reupload_marks_existing_partner_update_duplicate(
+    tmp_path,
+) -> None:
+    admin_email = f"dedupe-upload-admin-{uuid.uuid4()}@example.com"
+    partner_name = f"DedupePartner{uuid.uuid4().hex[:8]}"
+    settings = get_settings().model_copy(update={"local_upload_storage_dir": str(tmp_path)})
+
+    async with get_session_factory()() as session:
+        await cleanup_test_records(session, [partner_name], [admin_email])
+        admin = User(email=admin_email, display_name="Dedupe Upload Admin")
+        admin.role_assignments = [UserRoleAssignment(role_type=RoleType.admin)]
+        partner = Partner(
+            name=partner_name,
+            description="Dedupe partner",
+            status=PartnerStatus.active.value,
+        )
+        session.add_all([admin, partner])
+        await session.commit()
+
+        service = KnowledgeUploadService(session, settings)
+        file_name = "Software Ecosystem Monthly Status Report_July 24 2026.docx"
+        file_body = docx_bytes(
+            [
+                partner_name,
+                f"{partner_name} completed duplicate-safe upload validation in July 2026.",
+            ]
+        )
+        first_detail = await service.create_admin_session(
+            files=[upload_file(file_name, file_body)],
+            current_user=user_to_response(admin),
+        )
+        first_candidate = first_detail.candidates[0]
+        approved = await service.update_admin_session_candidate(
+            session_id=first_detail.session.session_id,
+            candidate_id=first_candidate.candidate_id,
+            partner_id=first_candidate.partner_id,
+            cycle_month=first_candidate.cycle_month,
+            summary=first_candidate.summary,
+            status_value=KnowledgeUploadCandidateStatus.approved,
+        )
+        first_commit = await service.commit_admin_session(
+            session_id=first_detail.session.session_id,
+            candidate_ids=[approved.candidate_id],
+            current_user=user_to_response(admin),
+        )
+        assert first_commit.committed_count == 1
+
+        second_detail = await service.create_admin_session(
+            files=[upload_file(file_name, file_body)],
+            current_user=user_to_response(admin),
+        )
+        duplicate = second_detail.candidates[0]
+        assert duplicate.review_status == KnowledgeUploadCandidateReviewStatus.duplicate
+        assert duplicate.status == KnowledgeUploadCandidateStatus.pending
+        assert "same file content" in " ".join(second_detail.session.warnings)
+        assert "Already approved" in (duplicate.parser_notes or "")
+
+        duplicate_commit = await service.commit_admin_session(
+            session_id=second_detail.session.session_id,
+            candidate_ids=[duplicate.candidate_id],
+            current_user=user_to_response(admin),
+        )
+        assert duplicate_commit.committed_count == 0
+        assert duplicate_commit.skipped_count == 1
+
+        committed_updates = list(
+            await session.scalars(
+                select(PartnerUpdate).where(PartnerUpdate.partner_id == partner.partner_id)
+            )
+        )
+        memory_chunks = list(
+            await session.scalars(
+                select(MemoryChunk).where(MemoryChunk.partner_id == partner.partner_id)
+            )
+        )
+        assert len(committed_updates) == 1
+        assert committed_updates[0].dedupe_fingerprint
+        assert len(memory_chunks) == 1
+
+        await cleanup_test_records(session, [partner_name], [admin_email])
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_admin_knowledge_upload_same_content_different_scope_is_not_duplicate(
+    tmp_path,
+) -> None:
+    admin_email = f"dedupe-scope-admin-{uuid.uuid4()}@example.com"
+    first_partner_name = f"DedupeScopeA{uuid.uuid4().hex[:8]}"
+    second_partner_name = f"DedupeScopeB{uuid.uuid4().hex[:8]}"
+    settings = get_settings().model_copy(update={"local_upload_storage_dir": str(tmp_path)})
+
+    async with get_session_factory()() as session:
+        await cleanup_test_records(
+            session,
+            [first_partner_name, second_partner_name],
+            [admin_email],
+        )
+        admin = User(email=admin_email, display_name="Dedupe Scope Admin")
+        admin.role_assignments = [UserRoleAssignment(role_type=RoleType.admin)]
+        first_partner = Partner(
+            name=first_partner_name,
+            description="First dedupe scope partner",
+            status=PartnerStatus.active.value,
+        )
+        second_partner = Partner(
+            name=second_partner_name,
+            description="Second dedupe scope partner",
+            status=PartnerStatus.active.value,
+        )
+        session.add_all([admin, first_partner, second_partner])
+        await session.commit()
+
+        service = KnowledgeUploadService(session, settings)
+        update_text = "Completed cross-scope dedupe validation."
+        first_partner_update_text = f"{first_partner_name} {update_text}"
+        second_partner_update_text = f"{second_partner_name} {update_text}"
+        first_detail = await service.create_admin_session(
+            files=[
+                upload_file(
+                    "Software Ecosystem Monthly Status Report_July 2026.docx",
+                    docx_bytes([first_partner_name, first_partner_update_text]),
+                )
+            ],
+            current_user=user_to_response(admin),
+        )
+        first_candidate = first_detail.candidates[0]
+        first_approved = await service.update_admin_session_candidate(
+            session_id=first_detail.session.session_id,
+            candidate_id=first_candidate.candidate_id,
+            partner_id=first_candidate.partner_id,
+            cycle_month=first_candidate.cycle_month,
+            summary=first_candidate.summary,
+            status_value=KnowledgeUploadCandidateStatus.approved,
+        )
+        await service.commit_admin_session(
+            session_id=first_detail.session.session_id,
+            candidate_ids=[first_approved.candidate_id],
+            current_user=user_to_response(admin),
+        )
+
+        second_partner_detail = await service.create_admin_session(
+            files=[
+                upload_file(
+                    "Software Ecosystem Monthly Status Report_July 2026.docx",
+                    docx_bytes([second_partner_name, second_partner_update_text]),
+                )
+            ],
+            current_user=user_to_response(admin),
+        )
+        assert second_partner_detail.candidates[0].review_status == "ready"
+
+        second_cycle_detail = await service.create_admin_session(
+            files=[
+                upload_file(
+                    "Software Ecosystem Monthly Status Report_Aug 2026.docx",
+                    docx_bytes([first_partner_name, first_partner_update_text]),
+                )
+            ],
+            current_user=user_to_response(admin),
+        )
+        assert second_cycle_detail.candidates[0].review_status == "ready"
+
+        await cleanup_test_records(
+            session,
+            [first_partner_name, second_partner_name],
+            [admin_email],
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
 async def test_admin_knowledge_upload_session_reads_from_s3_storage(
     tmp_path,
     monkeypatch,
@@ -337,7 +518,7 @@ async def test_admin_knowledge_upload_session_reads_from_s3_storage(
         assert len(fake_s3.objects) == 1
         [(bucket, storage_key)] = list(fake_s3.objects)
         assert bucket == settings.s3_bucket
-        assert storage_key.startswith("uploads/")
+        assert storage_key.startswith("knowledge-uploads/")
         assert not (Path(settings.local_upload_storage_dir) / storage_key).exists()
         assert len(detail.candidates) == 1
         assert detail.candidates[0].partner_id == partner.partner_id
@@ -446,6 +627,41 @@ async def test_admin_knowledge_upload_session_commits_events_topics(tmp_path) ->
             )
         )
         assert partner_updates == []
+
+        duplicate_detail = await service.create_admin_session(
+            files=[
+                upload_file(
+                    "Software Ecosystem Monthly Status Report_Feb 28 2026.docx",
+                    docx_list_bytes(
+                        [
+                            ("Ecosystem Projects:", 1, None),
+                            ("Ecosystem Dashboard", 0, None, "16"),
+                            ("500+ recommended packages", 1, None, "16"),
+                        ]
+                    ),
+                )
+            ],
+            current_user=user_to_response(admin),
+        )
+        duplicate = duplicate_detail.candidates[0]
+        assert duplicate.topic_name == "Ecosystem Projects"
+        assert duplicate.review_status == KnowledgeUploadCandidateReviewStatus.duplicate
+        assert "Already approved" in (duplicate.parser_notes or "")
+
+        duplicate_commit = await service.commit_admin_session(
+            session_id=duplicate_detail.session.session_id,
+            candidate_ids=[duplicate.candidate_id],
+            current_user=user_to_response(admin),
+        )
+        assert duplicate_commit.committed_count == 0
+        assert duplicate_commit.skipped_count == 1
+        assert len(
+            list(
+                await session.scalars(
+                    select(TopicUpdate).where(TopicUpdate.created_by == admin.user_id)
+                )
+            )
+        ) == 1
 
         await cleanup_test_records(session, [partner_name], [admin_email])
         await session.commit()

@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, date, datetime
 from enum import StrEnum
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -75,6 +75,7 @@ class TopicUpdate(Base):
     source_label: Mapped[str | None] = mapped_column(String(240), nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_event_key: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    dedupe_fingerprint: Mapped[str | None] = mapped_column(String(180), nullable=True, index=True)
     status: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
@@ -109,3 +110,9 @@ Index("ix_event_topics_status_name", "status", "name")
 Index("ix_topic_updates_topic_cycle_status", "topic_label", "cycle_month", "status")
 Index("ix_topic_updates_topic_id_cycle_status", "topic_id", "cycle_month", "status")
 Index("ix_topic_updates_source_event_key", "source_event_key", unique=True)
+Index(
+    "ix_topic_updates_approved_dedupe_fingerprint",
+    "dedupe_fingerprint",
+    unique=True,
+    postgresql_where=text("dedupe_fingerprint IS NOT NULL AND status = 'approved'"),
+)

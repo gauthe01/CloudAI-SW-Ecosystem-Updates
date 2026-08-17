@@ -6898,7 +6898,12 @@ h1 {
   line-height: 1.5;
 }
 
-.knowledge-fact-grid,
+.knowledge-fact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+
 .knowledge-success-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -7033,6 +7038,10 @@ h1 {
   background: white;
 }
 
+.knowledge-candidate.duplicate {
+  background: #fbfcfd;
+}
+
 .status-pill.approved {
   background: #e8fbf4;
   color: #087f5b;
@@ -7046,6 +7055,11 @@ h1 {
 .status-pill.skipped {
   background: #f2f4f7;
   color: #667085;
+}
+
+.status-pill.duplicate {
+  background: #fff7e6;
+  color: #9a6700;
 }
 
 .knowledge-rich-editor {

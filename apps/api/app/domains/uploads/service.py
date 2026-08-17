@@ -1,3 +1,4 @@
+import hashlib
 import re
 import uuid
 from collections import defaultdict
@@ -137,6 +138,14 @@ class KnowledgeUploadService:
                 session_id=session.session_id,
             )
             uploads.append(upload)
+            if await self._has_existing_upload_checksum(
+                upload.checksum_sha256,
+                exclude_upload_id=upload.upload_id,
+            ):
+                warnings.append(
+                    f"{upload.original_filename} has the same file content as a previous upload. "
+                    "Already-approved duplicate updates will be blocked automatically."
+                )
             with readable_upload_file(
                 settings=self.settings,
                 storage_backend=upload.storage_backend,
@@ -165,6 +174,7 @@ class KnowledgeUploadService:
                 candidates.append(candidate)
 
         self._auto_resolve_event_topics(candidates, active_event_topics)
+        await self._refresh_duplicate_statuses(candidates)
 
         agent_run = AgentRun(
             run_type="knowledge_upload_extraction",
@@ -256,7 +266,7 @@ class KnowledgeUploadService:
                 for candidate in rows:
                     candidate.partner_id = mapping.partner_id
                     candidate.topic_id = None
-                    candidate.review_status = review_status_for_candidate(candidate)
+                    candidate.review_status = base_review_status_for_candidate(candidate)
                     candidate.parser_notes = parser_note_for_candidate(candidate)
                     candidate.updated_at = datetime.now(UTC)
             elif action == "existing_topic":
@@ -307,6 +317,7 @@ class KnowledgeUploadService:
                     detail=f"Unsupported mapping action {mapping.action!r}.",
                 )
 
+        await self._refresh_duplicate_statuses(candidates)
         session = await self._get_session_or_404(session_id)
         session.unknown_name_count = len(unknown_labels_from_candidates(candidates))
         session.summary = build_session_summary(session)
@@ -346,8 +357,9 @@ class KnowledgeUploadService:
         if partner_id is not None:
             candidate.topic_id = None
         candidate.cycle_month = cycle_month
-        candidate.review_status = review_status_for_candidate(candidate)
+        candidate.review_status = base_review_status_for_candidate(candidate)
         candidate.parser_notes = parser_note_for_candidate(candidate)
+        await self._refresh_candidate_duplicate_status(candidate)
         if status_value is not None:
             if (
                 status_value == KnowledgeUploadCandidateStatus.approved
@@ -412,6 +424,11 @@ class KnowledgeUploadService:
                 candidate.updated_at = now
                 skipped_count += 1
                 continue
+            await self._refresh_candidate_duplicate_status(candidate)
+            if candidate.review_status == KnowledgeUploadCandidateReviewStatus.duplicate.value:
+                candidate.updated_at = now
+                skipped_count += 1
+                continue
 
             if candidate.review_status == KnowledgeUploadCandidateReviewStatus.topic_pending.value:
                 source_event_key = f"knowledge-upload-topic:{candidate.candidate_id}"
@@ -438,6 +455,7 @@ class KnowledgeUploadService:
                     source_label=source_label_for_candidate(candidate, upload),
                     source_url=candidate.source_url,
                     source_event_key=source_event_key,
+                    dedupe_fingerprint=candidate.dedupe_fingerprint,
                     status=TopicUpdateStatus.approved.value,
                     created_by=current_user.user_id,
                     approved_by=current_user.user_id,
@@ -472,6 +490,7 @@ class KnowledgeUploadService:
                 source_label=source_label_for_candidate(candidate, upload),
                 source_url=candidate.source_url,
                 source_event_key=source_event_key,
+                dedupe_fingerprint=candidate.dedupe_fingerprint,
                 status=PartnerUpdateStatus.approved.value,
                 created_by=current_user.user_id,
                 approved_by=current_user.user_id,
@@ -665,8 +684,21 @@ class KnowledgeUploadService:
         if partner_id is not None:
             candidate.topic_id = None
         candidate.cycle_month = cycle_month
-        candidate.review_status = review_status_for_candidate(candidate)
+        candidate.review_status = base_review_status_for_candidate(candidate)
+        await self._refresh_candidate_duplicate_status(candidate)
         if status_value is not None:
+            if (
+                status_value == KnowledgeUploadCandidateStatus.approved
+                and candidate.review_status
+                not in {
+                    KnowledgeUploadCandidateReviewStatus.ready.value,
+                    KnowledgeUploadCandidateReviewStatus.topic_pending.value,
+                }
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Resolve partner/topic and cycle before approving this candidate.",
+                )
             candidate.status = status_value.value
         candidate.parser_notes = parser_note_for_candidate(candidate)
         candidate.updated_at = datetime.now(UTC)
@@ -691,6 +723,7 @@ class KnowledgeUploadService:
             upload_id=upload_id,
             file=file,
             settings=self.settings,
+            storage_prefix=storage_prefix_for_upload(scope, partner_id),
         )
         now = datetime.now(UTC)
         upload = KnowledgeUpload(
@@ -885,6 +918,79 @@ class KnowledgeUploadService:
             candidate.raw_label = topic.name
             candidate.review_status = KnowledgeUploadCandidateReviewStatus.topic_pending.value
             candidate.parser_notes = "Matched existing Events/Topics label."
+
+    async def _has_existing_upload_checksum(
+        self,
+        checksum_sha256: str,
+        *,
+        exclude_upload_id: uuid.UUID,
+    ) -> bool:
+        result = await self.db.execute(
+            select(KnowledgeUpload.upload_id)
+            .where(KnowledgeUpload.checksum_sha256 == checksum_sha256)
+            .where(KnowledgeUpload.upload_id != exclude_upload_id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def _refresh_duplicate_statuses(
+        self,
+        candidates: list[KnowledgeUploadCandidate],
+    ) -> None:
+        for candidate in candidates:
+            await self._refresh_candidate_duplicate_status(candidate)
+
+    async def _refresh_candidate_duplicate_status(
+        self,
+        candidate: KnowledgeUploadCandidate,
+    ) -> None:
+        if candidate.status in {
+            KnowledgeUploadCandidateStatus.committed.value,
+            KnowledgeUploadCandidateStatus.dismissed.value,
+            KnowledgeUploadCandidateStatus.skipped.value,
+        }:
+            return
+        if candidate.review_status == KnowledgeUploadCandidateReviewStatus.likely_noise.value:
+            candidate.dedupe_fingerprint = None
+            return
+
+        base_status = base_review_status_for_candidate(candidate)
+        fingerprint = candidate_dedupe_fingerprint(candidate, base_status)
+        candidate.dedupe_fingerprint = fingerprint
+        if fingerprint and await self._dedupe_fingerprint_exists(fingerprint, base_status):
+            candidate.review_status = KnowledgeUploadCandidateReviewStatus.duplicate.value
+            if candidate.status == KnowledgeUploadCandidateStatus.approved.value:
+                candidate.status = KnowledgeUploadCandidateStatus.pending.value
+            candidate.parser_notes = "Already approved for this partner/topic and reporting period."
+            return
+
+        candidate.review_status = base_status
+        candidate.parser_notes = parser_note_for_candidate(candidate)
+
+    async def _dedupe_fingerprint_exists(
+        self,
+        fingerprint: str,
+        base_status: str,
+    ) -> bool:
+        if base_status == KnowledgeUploadCandidateReviewStatus.topic_pending.value:
+            result = await self.db.execute(
+                select(TopicUpdate.topic_update_id)
+                .where(TopicUpdate.dedupe_fingerprint == fingerprint)
+                .where(TopicUpdate.status == TopicUpdateStatus.approved.value)
+                .limit(1)
+            )
+            return result.scalar_one_or_none() is not None
+
+        if base_status == KnowledgeUploadCandidateReviewStatus.ready.value:
+            result = await self.db.execute(
+                select(PartnerUpdate.update_id)
+                .where(PartnerUpdate.dedupe_fingerprint == fingerprint)
+                .where(PartnerUpdate.status == PartnerUpdateStatus.approved.value)
+                .limit(1)
+            )
+            return result.scalar_one_or_none() is not None
+
+        return False
 
     async def _analyze_admin_upload(
         self,
@@ -1274,11 +1380,25 @@ def review_status_for_candidate(candidate: KnowledgeUploadCandidate) -> str:
     )
 
 
+def base_review_status_for_candidate(candidate: KnowledgeUploadCandidate) -> str:
+    if candidate.review_status == KnowledgeUploadCandidateReviewStatus.likely_noise.value:
+        return KnowledgeUploadCandidateReviewStatus.likely_noise.value
+    if candidate.topic_id is not None and candidate.partner_id is None and candidate.cycle_month:
+        return KnowledgeUploadCandidateReviewStatus.topic_pending.value
+    return (
+        KnowledgeUploadCandidateReviewStatus.ready.value
+        if candidate.partner_id is not None and candidate.cycle_month is not None
+        else KnowledgeUploadCandidateReviewStatus.needs_mapping.value
+    )
+
+
 def parser_note_for_candidate(candidate: KnowledgeUploadCandidate) -> str | None:
     if candidate.review_status == KnowledgeUploadCandidateReviewStatus.ready.value:
         return None
     if candidate.review_status == KnowledgeUploadCandidateReviewStatus.likely_noise.value:
         return "Skipped as non-partner knowledge."
+    if candidate.review_status == KnowledgeUploadCandidateReviewStatus.duplicate.value:
+        return "Already approved for this partner/topic and reporting period."
     if candidate.review_status == KnowledgeUploadCandidateReviewStatus.topic_pending.value:
         return "Will be stored in Events/Topics when committed."
     missing = []
@@ -1287,6 +1407,18 @@ def parser_note_for_candidate(candidate: KnowledgeUploadCandidate) -> str | None
     if candidate.cycle_month is None:
         missing.append("cycle")
     return f"Needs {' and '.join(missing)} before commit." if missing else None
+
+
+def storage_prefix_for_upload(
+    scope: KnowledgeUploadScope,
+    partner_id: uuid.UUID | None,
+) -> str:
+    if scope == KnowledgeUploadScope.admin_knowledge:
+        return "knowledge-uploads"
+    if scope == KnowledgeUploadScope.contributor_partner_file:
+        partner_segment = str(partner_id) if partner_id is not None else "unassigned"
+        return f"contributor-files/{partner_segment}"
+    return "uploads"
 
 
 def unknown_labels_from_candidates(candidates: list[KnowledgeUploadCandidate]) -> list[str]:
@@ -1317,6 +1449,64 @@ def combined_fingerprint(values: list[str]) -> str | None:
     if not values:
         return None
     return "|".join(sorted(values))[:128]
+
+
+def candidate_dedupe_fingerprint(
+    candidate: KnowledgeUploadCandidate,
+    base_status: str | None = None,
+) -> str | None:
+    if candidate.cycle_month is None:
+        return None
+    status_value = base_status or base_review_status_for_candidate(candidate)
+    if status_value == KnowledgeUploadCandidateReviewStatus.topic_pending.value:
+        target_key = (
+            str(candidate.topic_id)
+            if candidate.topic_id is not None
+            else normalize_event_topic_name(topic_label_for_candidate(candidate))
+        )
+        return build_dedupe_fingerprint(
+            target_kind="topic",
+            target_key=target_key,
+            cycle_month=candidate.cycle_month,
+            summary=candidate.summary,
+        )
+    if status_value == KnowledgeUploadCandidateReviewStatus.ready.value and candidate.partner_id:
+        return build_dedupe_fingerprint(
+            target_kind="partner",
+            target_key=str(candidate.partner_id),
+            cycle_month=candidate.cycle_month,
+            summary=candidate.summary,
+        )
+    return None
+
+
+def build_dedupe_fingerprint(
+    *,
+    target_kind: str,
+    target_key: str,
+    cycle_month: date,
+    summary: str,
+) -> str:
+    normalized_summary = normalize_update_content_for_dedupe(summary)
+    digest = hashlib.sha256(normalized_summary.encode("utf-8")).hexdigest()
+    return f"{target_kind}:{target_key}:cycle:{cycle_month:%Y-%m}:content:{digest}"
+
+
+def normalize_update_content_for_dedupe(value: str) -> str:
+    text = re.sub(
+        r"(?is)<a\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+        lambda match: f" {strip_html_tags(match.group(2))} [link:{unescape(match.group(1))}] ",
+        value,
+    )
+    text = re.sub(r"(?i)<br\s*/?>", " ", text)
+    text = re.sub(r"(?i)</(?:p|li|div|h[1-6]|ul|ol)>", " ", text)
+    text = re.sub(r"(?i)<li[^>]*>", " ", text)
+    text = strip_html_tags(text)
+    return normalize_spacing(unescape(text).lower())
+
+
+def strip_html_tags(value: str) -> str:
+    return re.sub(r"<[^>]+>", "", value)
 
 
 def candidate_can_commit(candidate: KnowledgeUploadCandidate) -> bool:

@@ -151,28 +151,34 @@ export function AdminKnowledgeUploadPanel() {
         (candidate) =>
           candidate.status !== "dismissed" &&
           candidate.status !== "skipped" &&
-          candidate.review_status !== "likely_noise" &&
-          candidate.review_status !== "duplicate",
+          candidate.review_status !== "likely_noise",
       ) ?? [],
     [sessionDetail],
   );
 
-  const approvableCandidates = useMemo(
+  const reviewCandidates = useMemo(
     () =>
       activeCandidates.filter(
         (candidate) =>
           candidate.cycle_month &&
           (candidate.review_status === "ready" ||
-            candidate.review_status === "topic_pending") &&
-          (candidate.review_status === "topic_pending" || candidate.partner_id) &&
-          (candidate.status === "pending" || candidate.status === "approved"),
+            candidate.review_status === "topic_pending" ||
+            candidate.review_status === "duplicate") &&
+          (candidate.review_status === "topic_pending" ||
+            candidate.review_status === "duplicate" ||
+            candidate.partner_id),
       ),
     [activeCandidates],
   );
 
+  const approvableCandidates = useMemo(
+    () => activeCandidates.filter((candidate) => canApproveCandidate(candidate)),
+    [activeCandidates],
+  );
+
   const partnerGroups = useMemo(
-    () => groupCandidatesByPartner(approvableCandidates),
-    [approvableCandidates],
+    () => groupCandidatesByPartner(reviewCandidates),
+    [reviewCandidates],
   );
 
   const approvedCandidates = useMemo(
@@ -219,14 +225,7 @@ export function AdminKnowledgeUploadPanel() {
     setSelectedCandidateIds((current) => {
       const eligibleIds = new Set(
         nextDetail.candidates
-          .filter(
-            (candidate) =>
-              candidate.cycle_month &&
-              (candidate.review_status === "ready" ||
-                candidate.review_status === "topic_pending") &&
-              (candidate.review_status === "topic_pending" || candidate.partner_id) &&
-              (candidate.status === "pending" || candidate.status === "approved"),
-          )
+          .filter((candidate) => canApproveCandidate(candidate))
           .map((candidate) => candidate.candidate_id),
       );
       return new Set([...current].filter((candidateId) => eligibleIds.has(candidateId)));
@@ -374,6 +373,9 @@ export function AdminKnowledgeUploadPanel() {
   }
 
   async function handleToggleApproval(candidate: KnowledgeUploadCandidate) {
+    if (!canApproveCandidate(candidate)) {
+      return;
+    }
     const willApprove = !selectedCandidateIds.has(candidate.candidate_id);
     setSelectedCandidateIds((current) => {
       const next = new Set(current);
@@ -712,6 +714,9 @@ function ConfirmStep({
   onContinue: () => void;
 }) {
   const session = detail.session;
+  const duplicateCount = detail.candidates.filter(
+    (candidate) => candidate.review_status === "duplicate",
+  ).length;
   return (
     <div className="knowledge-upload-card">
       <div className="knowledge-card-heading">
@@ -728,6 +733,9 @@ function ConfirmStep({
         <FactCard label="Document type" value={session.document_type ?? "Historical report"} />
         <FactCard label="Reporting period" value={displayMonth(session.inferred_cycle)} />
         <FactCard label="Updates found" value={String(session.update_count)} hint="updates ready for review" />
+        {duplicateCount ? (
+          <FactCard label="Duplicates" value={String(duplicateCount)} hint="already approved" />
+        ) : null}
         <FactCard
           label="Partners"
           value={String(session.partner_count)}
@@ -1016,19 +1024,21 @@ function CandidateReviewCard({
   ) => void;
   onToggleApproval: (candidate: KnowledgeUploadCandidate) => void;
 }) {
-  const isTopicCandidate = candidate.review_status === "topic_pending";
+  const isTopicCandidate =
+    candidate.review_status === "topic_pending" || Boolean(candidate.topic_id && !candidate.partner_id);
+  const isDuplicate = candidate.review_status === "duplicate";
+  const controlsDisabled = disabled || isDuplicate;
+  const statusLabel = isDuplicate ? "duplicate" : selected ? "approved" : candidate.status;
   return (
-    <article className={`knowledge-candidate ${selected ? "approved" : ""}`}>
+    <article
+      className={`knowledge-candidate ${selected ? "approved" : ""} ${
+        isDuplicate ? "duplicate" : ""
+      }`}
+    >
       <label className="knowledge-candidate-check">
         <input
           checked={selected}
-          disabled={
-            disabled ||
-            !(
-              candidate.review_status === "ready" ||
-              candidate.review_status === "topic_pending"
-            )
-          }
+          disabled={controlsDisabled || !canApproveCandidate(candidate)}
           type="checkbox"
           onChange={() => onToggleApproval(candidate)}
         />
@@ -1037,15 +1047,15 @@ function CandidateReviewCard({
       <div className="knowledge-candidate-body">
         <div className="knowledge-candidate-topline">
           <div className="knowledge-candidate-meta">
-            <span className={`status-pill ${selected ? "approved" : candidate.status}`}>
-              {displayCandidateStatus(selected ? "approved" : candidate.status)}
+            <span className={`status-pill ${statusLabel}`}>
+              {displayCandidateStatus(statusLabel)}
             </span>
           </div>
         </div>
 
         <CandidateSummaryEditor
           candidate={candidate}
-          disabled={disabled}
+          disabled={controlsDisabled}
           onChange={(summary) => onCandidateChange(candidate, { summary })}
         />
 
@@ -1059,7 +1069,7 @@ function CandidateReviewCard({
             <label>
               <span>Partner</span>
               <select
-                disabled={disabled}
+                disabled={controlsDisabled}
                 value={candidate.partner_id ?? ""}
                 onChange={(event) =>
                   onCandidateChange(candidate, {
@@ -1080,7 +1090,7 @@ function CandidateReviewCard({
           <label>
             <span>Cycle</span>
             <input
-              disabled={disabled}
+              disabled={controlsDisabled}
               type="month"
               value={toMonthInput(candidate.cycle_month)}
               onChange={(event) =>
@@ -1560,7 +1570,8 @@ type CandidatePartnerGroup = {
 function groupCandidatesByPartner(candidates: KnowledgeUploadCandidate[]): CandidatePartnerGroup[] {
   const groups = new Map<string, CandidatePartnerGroup>();
   for (const candidate of candidates) {
-    const isTopic = candidate.review_status === "topic_pending";
+    const isTopic =
+      candidate.review_status === "topic_pending" || Boolean(candidate.topic_id && !candidate.partner_id);
     const topicLabel = topicCandidateLabel(candidate);
     const partnerId = isTopic ? `topic:${topicLabel}` : candidate.partner_id ?? "unknown";
     const partnerName = isTopic
@@ -1581,7 +1592,8 @@ function groupCandidatesByPartner(candidates: KnowledgeUploadCandidate[]): Candi
 function groupApprovedSummary(candidates: KnowledgeUploadCandidate[]) {
   const groups = new Map<string, { partnerId: string; partnerName: string; count: number }>();
   for (const candidate of candidates) {
-    const isTopic = candidate.review_status === "topic_pending";
+    const isTopic =
+      candidate.review_status === "topic_pending" || Boolean(candidate.topic_id && !candidate.partner_id);
     const topicLabel = topicCandidateLabel(candidate);
     const partnerId = isTopic ? `topic:${topicLabel}` : candidate.partner_id;
     const partnerName = isTopic ? topicLabel : candidate.partner_name;
@@ -1711,6 +1723,15 @@ function displayCandidateStatus(status: string) {
     .filter(Boolean)
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join(" ");
+}
+
+function canApproveCandidate(candidate: KnowledgeUploadCandidate) {
+  return Boolean(
+    candidate.cycle_month &&
+    (candidate.review_status === "ready" || candidate.review_status === "topic_pending") &&
+    (candidate.review_status === "topic_pending" || candidate.partner_id) &&
+    (candidate.status === "pending" || candidate.status === "approved"),
+  );
 }
 
 function summaryToEditorHtml(summary: string, sourceUrl?: string | null) {

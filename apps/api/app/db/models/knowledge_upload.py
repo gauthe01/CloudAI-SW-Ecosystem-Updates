@@ -190,6 +190,7 @@ class KnowledgeUploadCandidate(Base):
     source_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
     source_location: Mapped[str | None] = mapped_column(String(500), nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dedupe_fingerprint: Mapped[str | None] = mapped_column(String(180), nullable=True, index=True)
     confidence: Mapped[str] = mapped_column(String(32), nullable=False, default="medium")
     review_status: Mapped[str] = mapped_column(String(64), nullable=False, default="ready")
     status: Mapped[str] = mapped_column(
