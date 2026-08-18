@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import UTC, date, datetime
 
@@ -16,7 +17,128 @@ from app.db.models.partner_metadata import (
 from app.db.models.partner_update import PartnerUpdate, PartnerUpdateStatus
 from app.db.models.topic_update import TopicUpdate, TopicUpdateStatus
 from app.db.session import get_session_factory
-from app.domains.presenter.service import PresenterService
+from app.domains.presenter import service as presenter_service
+from app.domains.presenter.service import PresenterService, parse_decision_board_response
+
+
+class FakeDecisionBoardRuntime:
+    def __init__(self, client) -> None:
+        self.client = client
+
+
+class FakeDecisionBoardClient:
+    def __init__(self, content: str) -> None:
+        self.chat = FakeDecisionBoardChat(self)
+        self.content = content
+        self.calls = 0
+
+
+class FakeDecisionBoardChat:
+    def __init__(self, parent: FakeDecisionBoardClient) -> None:
+        self.completions = FakeDecisionBoardCompletions(parent)
+
+
+class FakeDecisionBoardCompletions:
+    def __init__(self, parent: FakeDecisionBoardClient) -> None:
+        self.parent = parent
+
+    async def create(self, **_kwargs):
+        self.parent.calls += 1
+        await asyncio.sleep(0)
+        return FakeDecisionBoardResponse(self.parent.content)
+
+
+class FakeDecisionBoardResponse:
+    def __init__(self, content: str) -> None:
+        self.choices = [FakeDecisionBoardChoice(content)]
+
+
+class FakeDecisionBoardChoice:
+    def __init__(self, content: str) -> None:
+        self.message = FakeDecisionBoardMessage(content)
+
+
+class FakeDecisionBoardMessage:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+def test_decision_board_parser_accepts_interview_card_shape() -> None:
+    update_id = uuid.uuid4()
+    payload = f"""
+    {{
+      "signals": [
+        {{
+          "partner_id": "{uuid.uuid4()}",
+          "partner_name": "SAP HANA Cloud",
+          "priority": "P3",
+          "title": "ARM64 publishing automation monitoring",
+          "update_line": "ARM64 image publishing automation needs monitoring.",
+          "action": null,
+          "source_kind": "approved_update",
+          "update_id": "{update_id}"
+        }},
+        {{
+          "partner_name": "AWS",
+          "priority": "P2",
+          "title": "Legal agreement delay",
+          "update_line": "Legal agreement delay is marked amber and could delay launch messaging.",
+          "action": "Confirm campaign input owner",
+          "source_kind": "metadata_risk",
+          "metadata_risk_id": "{uuid.uuid4()}"
+        }}
+      ],
+      "source_note": null
+    }}
+    """
+
+    parsed = parse_decision_board_response(payload)
+
+    signals = parsed["signals"]
+    assert len(signals) == 2
+    assert signals[0].title == "ARM64 publishing automation monitoring"
+    assert signals[0].update_line == "ARM64 image publishing automation needs monitoring."
+    assert signals[0].action is None
+    assert signals[0].update_id == update_id
+    assert signals[1].action == "Confirm campaign input owner"
+
+
+@pytest.mark.asyncio
+async def test_decision_board_model_content_is_cached_for_identical_payloads() -> None:
+    presenter_service._DECISION_BOARD_CONTENT_CACHE.clear()
+    presenter_service._DECISION_BOARD_IN_FLIGHT.clear()
+    fake_client = FakeDecisionBoardClient(
+        '{"signals":[],"source_note":"No Decision Board items found for the '
+        'selected partners and period."}'
+    )
+    runtime = FakeDecisionBoardRuntime(fake_client)
+    payload = {
+        "task": "presenter_decision_board",
+        "scope": {"cycle": "2026-07", "partner_ids": []},
+        "approved_updates": [],
+        "partner_metadata": [],
+    }
+
+    first, second = await asyncio.gather(
+        presenter_service.cached_decision_board_model_content(
+            runtime=runtime,
+            model="reporting-model",
+            payload=payload,
+        ),
+        presenter_service.cached_decision_board_model_content(
+            runtime=runtime,
+            model="reporting-model",
+            payload=payload,
+        ),
+    )
+    third = await presenter_service.cached_decision_board_model_content(
+        runtime=runtime,
+        model="reporting-model",
+        payload=payload,
+    )
+
+    assert first == second == third
+    assert fake_client.calls == 1
 
 
 @pytest.mark.asyncio

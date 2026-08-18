@@ -1,3 +1,5 @@
+import asyncio
+import hashlib
 import json
 import re
 import uuid
@@ -11,7 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agents.rulebooks import RulebookLoader
-from app.agents.runtime.client import AIRuntimeConfigurationError, build_ai_client_runtime
+from app.agents.runtime.client import (
+    AIClientRuntime,
+    AIRuntimeConfigurationError,
+    build_ai_client_runtime,
+)
 from app.db.models.partner import Partner, PartnerStatus
 from app.db.models.partner_metadata import (
     PartnerMetadataSnapshot,
@@ -34,6 +40,10 @@ from app.domains.presenter.schemas import (
     PresenterResourceLinkResponse,
     PresenterUpdateResponse,
 )
+
+DECISION_BOARD_CACHE_MAX_ITEMS = 128
+_DECISION_BOARD_CONTENT_CACHE: dict[str, str] = {}
+_DECISION_BOARD_IN_FLIGHT: dict[str, asyncio.Task[str]] = {}
 
 
 class PresenterService:
@@ -109,6 +119,7 @@ class PresenterService:
                 PartnerUpdate.approved_at.desc().nullslast(),
                 Partner.name.asc(),
                 PartnerUpdate.updated_at.desc(),
+                PartnerUpdate.update_id.asc(),
             )
         )
         if scoped_partner_ids:
@@ -164,6 +175,7 @@ class PresenterService:
                 update.approved_at.timestamp() if update.approved_at else 0.0,
                 update.partner_name,
                 update.title,
+                str(update.update_id),
             ),
             reverse=True,
         )
@@ -447,13 +459,23 @@ class PresenterService:
             date_end=date_end,
             search=None,
         )
-        if not updates:
+        partner_updates = [
+            update for update in updates if update.scope == "partner" and update.partner_id
+        ]
+        metadata_snapshots = await self._decision_board_metadata_inputs(
+            cycle=cycle,
+            partner_id=partner_id,
+            partner_ids=partner_ids,
+            date_start=date_start,
+            date_end=date_end,
+        )
+        if not partner_updates and not metadata_snapshots:
             return PresenterDecisionBoardResponse(
                 cycle=cycle,
                 partner_id=partner_id if len(scoped_partner_ids) <= 1 else None,
                 partner_ids=scoped_partner_ids,
                 signals=[],
-                source_note="No approved updates are available for this selection.",
+                source_note="No Decision Board items found for the selected partners and period.",
                 update_count=0,
                 grounded=True,
                 model=None,
@@ -474,24 +496,17 @@ class PresenterService:
             date_start=date_start,
             date_end=date_end,
             scoped_partner_ids=scoped_partner_ids,
-            updates=updates,
+            updates=partner_updates,
+            metadata_snapshots=metadata_snapshots,
             rulebook_body=rulebook.body,
             rulebook_trace_version=rulebook.trace_version,
         )
 
         try:
-            response = await runtime.client.chat.completions.create(
+            content = await cached_decision_board_model_content(
+                runtime=runtime,
                 model=model,
-                messages=[
-                    {"role": "system", "content": decision_board_system_prompt()},
-                    {
-                        "role": "user",
-                        "content": json.dumps(payload, sort_keys=True, default=str),
-                    },
-                ],
-                response_format={"type": "json_object"},
-                temperature=0,
-                max_tokens=1100,
+                payload=payload,
             )
         except Exception as exc:
             raise HTTPException(
@@ -499,7 +514,6 @@ class PresenterService:
                 detail=f"Decision board agent failed: {exc}",
             ) from exc
 
-        content = response.choices[0].message.content or "{}"
         parsed = parse_decision_board_response(content)
         return PresenterDecisionBoardResponse(
             cycle=cycle,
@@ -507,7 +521,7 @@ class PresenterService:
             partner_ids=scoped_partner_ids,
             signals=parsed["signals"],
             source_note=parsed["source_note"],
-            update_count=len(updates),
+            update_count=len(partner_updates),
             grounded=True,
             model=model,
         )
@@ -656,6 +670,67 @@ class PresenterService:
                         )
                     )
         return items[:12]
+
+    async def _decision_board_metadata_inputs(
+        self,
+        *,
+        cycle: str,
+        partner_id: uuid.UUID | None,
+        partner_ids: list[uuid.UUID] | None = None,
+        date_start: date | None = None,
+        date_end: date | None = None,
+    ) -> list[dict[str, object]]:
+        start_month, end_month = resolve_period_month_bounds(
+            cycle=cycle,
+            date_start=date_start,
+            date_end=date_end,
+        )
+        scoped_partner_ids = normalize_partner_scope(partner_id=partner_id, partner_ids=partner_ids)
+        statement = (
+            select(Partner, PartnerMetadataSnapshot)
+            .join(
+                PartnerMetadataSnapshot,
+                PartnerMetadataSnapshot.partner_id == Partner.partner_id,
+            )
+            .options(selectinload(PartnerMetadataSnapshot.risks))
+            .where(Partner.status == PartnerStatus.active.value)
+            .where(PartnerMetadataSnapshot.cycle_month >= start_month)
+            .where(PartnerMetadataSnapshot.cycle_month <= end_month)
+            .order_by(
+                Partner.name.asc(),
+                Partner.partner_id.asc(),
+                PartnerMetadataSnapshot.cycle_month.asc(),
+                PartnerMetadataSnapshot.metadata_id.asc(),
+            )
+        )
+        if scoped_partner_ids:
+            statement = statement.where(Partner.partner_id.in_(scoped_partner_ids))
+        result = await self.db.execute(statement)
+        snapshots: list[dict[str, object]] = []
+        for partner, snapshot in result.all():
+            snapshots.append(
+                {
+                    "partner_id": str(partner.partner_id),
+                    "partner_name": partner.name,
+                    "cycle": format_cycle_month(snapshot.cycle_month),
+                    "status": snapshot.status,
+                    "risks": [
+                        {
+                            "metadata_risk_id": str(risk.risk_id),
+                            "description": risk.description,
+                            "severity": risk.severity,
+                            "due_date": risk.due_date,
+                            "green_action": risk.green_action,
+                            "ramification": risk.ramification,
+                        }
+                        for risk in sorted(
+                            snapshot.risks,
+                            key=lambda item: (item.sort_order, str(item.risk_id)),
+                        )
+                    ],
+                }
+            )
+        return snapshots
 
     def _update_to_response(
         self,
@@ -1040,18 +1115,18 @@ def parse_executive_summary_response(content: str) -> dict[str, list[str] | str 
 def decision_board_system_prompt() -> str:
     return (
         "You are the presenter Decision Board agent for Cloud AI Software Ecosystem Updates.\n"
-        "Use only the supplied approved updates and rulebook. Do not use model memory, "
-        "outside knowledge, partner metadata, pending updates, or assumptions.\n"
+        "Use only the supplied approved partner updates, same-period partner metadata risks, "
+        "and rulebook. Do not use model memory, outside knowledge, pending updates, topic "
+        "updates, raw source payloads, or assumptions.\n"
         "Return JSON only with this shape: "
         "{\"signals\": [{\"partner_id\": \"...\", \"partner_name\": \"...\", "
-        "\"priority\": \"P1|P2|P3\", \"title\": \"...\", \"action\": \"...\", "
-        "\"rationale\": \"...\", \"owner\": \"...\", \"due_date\": \"...\", "
-        "\"severity\": \"...\", \"source_label\": \"...\", \"source_url\": \"...\"}], "
+        "\"priority\": \"P1|P2|P3\", \"title\": \"...\", \"update_line\": \"...\", "
+        "\"action\": \"...\", \"source_kind\": \"approved_update|metadata_risk\", "
+        "\"update_id\": \"...\", \"metadata_risk_id\": \"...\"}], "
         "\"source_note\": \"...\"}.\n"
-        "If no approved update contains a decision, blocker, owner ask, deadline, risk, "
-        "or explicit next action, return an empty signals array. Preserve quantitative "
-        "facts and source links. Do not combine distinct facts with semicolons; use "
-        "separate cards or concise separate clauses."
+        "If no supplied input contains a decision-board item, return an empty signals array. "
+        "Do not include rationale, visible source labels, owner fields, or separate due-date "
+        "or severity fields."
     )
 
 
@@ -1062,6 +1137,7 @@ def build_decision_board_payload(
     date_end: date | None,
     scoped_partner_ids: list[uuid.UUID],
     updates: list[PresenterUpdateResponse],
+    metadata_snapshots: list[dict[str, object]],
     rulebook_body: str,
     rulebook_trace_version: str,
 ) -> dict[str, object]:
@@ -1081,28 +1157,92 @@ def build_decision_board_payload(
         "approved_updates": [
             {
                 "update_id": str(update.update_id),
-                "partner_id": str(update.partner_id) if update.partner_id else None,
+                "partner_id": str(update.partner_id),
                 "partner_name": update.partner_name,
-                "scope": update.scope,
-                "topic_label": update.topic_label,
                 "cycle": update.cycle,
                 "title": update.title,
                 "summary": strip_html(update.summary),
-                "source_type": update.source_type.value,
-                "source_label": update.source_label,
-                "source_url": update.source_url,
                 "approved_at": update.approved_at.isoformat() if update.approved_at else None,
             }
             for update in updates[:80]
         ],
+        "partner_metadata": metadata_snapshots,
         "output_contract": {
             "signals": (
-                "0-12 decision cards. Each card must be grounded in one or more approved "
-                "updates and must include title, action, and rationale."
+                "0-15 decision cards. Each card must include partner_id, partner_name, "
+                "priority, title, update_line, and source_kind. action is optional and "
+                "must be present only when explicitly grounded."
             ),
-            "source_note": "Optional short scope/data note.",
+            "source_note": "Use a short scope/data note when no cards are found.",
         },
     }
+
+
+async def cached_decision_board_model_content(
+    *,
+    runtime: AIClientRuntime,
+    model: str,
+    payload: dict[str, object],
+) -> str:
+    cache_key = decision_board_cache_key(model=model, payload=payload)
+    cached = _DECISION_BOARD_CONTENT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    task = _DECISION_BOARD_IN_FLIGHT.get(cache_key)
+    if task is None:
+        task = asyncio.create_task(
+            fetch_decision_board_model_content(
+                runtime=runtime,
+                model=model,
+                payload=payload,
+            )
+        )
+        _DECISION_BOARD_IN_FLIGHT[cache_key] = task
+
+    try:
+        content = await task
+    finally:
+        if task.done() and _DECISION_BOARD_IN_FLIGHT.get(cache_key) is task:
+            _DECISION_BOARD_IN_FLIGHT.pop(cache_key, None)
+
+    parse_decision_board_response(content)
+    _DECISION_BOARD_CONTENT_CACHE[cache_key] = content
+    while len(_DECISION_BOARD_CONTENT_CACHE) > DECISION_BOARD_CACHE_MAX_ITEMS:
+        _DECISION_BOARD_CONTENT_CACHE.pop(next(iter(_DECISION_BOARD_CONTENT_CACHE)))
+    return content
+
+
+async def fetch_decision_board_model_content(
+    *,
+    runtime: AIClientRuntime,
+    model: str,
+    payload: dict[str, object],
+) -> str:
+    response = await runtime.client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": decision_board_system_prompt()},
+            {
+                "role": "user",
+                "content": json.dumps(payload, sort_keys=True, default=str),
+            },
+        ],
+        response_format={"type": "json_object"},
+        temperature=0,
+        max_tokens=1600,
+    )
+    return response.choices[0].message.content or "{}"
+
+
+def decision_board_cache_key(*, model: str, payload: dict[str, object]) -> str:
+    serialized = json.dumps(
+        {"model": model, "payload": payload},
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def parse_decision_board_response(
@@ -1127,13 +1267,13 @@ def parse_decision_board_response(
         raw_signals = []
 
     signals: list[PresenterDecisionBoardSignal] = []
-    for raw_item in raw_signals[:12]:
+    for raw_item in raw_signals[:15]:
         if not isinstance(raw_item, dict):
             continue
         title = clean_agent_text(raw_item.get("title"))
         action = clean_agent_text(raw_item.get("action"))
-        rationale = clean_agent_text(raw_item.get("rationale"))
-        if not title or not action or not rationale:
+        update_line = clean_agent_text(raw_item.get("update_line"))
+        if not title or not update_line:
             continue
         signals.append(
             PresenterDecisionBoardSignal(
@@ -1141,13 +1281,11 @@ def parse_decision_board_response(
                 partner_name=clean_agent_text(raw_item.get("partner_name")) or None,
                 priority=normalize_priority(raw_item.get("priority")),
                 title=title,
-                action=action,
-                rationale=rationale,
-                owner=clean_agent_text(raw_item.get("owner")) or None,
-                due_date=clean_agent_text(raw_item.get("due_date")) or None,
-                severity=clean_agent_text(raw_item.get("severity")) or None,
-                source_label=clean_agent_text(raw_item.get("source_label")) or None,
-                source_url=clean_agent_text(raw_item.get("source_url")) or None,
+                update_line=update_line,
+                action=action or None,
+                source_kind=normalize_decision_board_source_kind(raw_item.get("source_kind")),
+                update_id=parse_optional_uuid(raw_item.get("update_id")),
+                metadata_risk_id=parse_optional_uuid(raw_item.get("metadata_risk_id")),
             )
         )
 
@@ -1165,6 +1303,13 @@ def parse_optional_uuid(value: object) -> uuid.UUID | None:
         return uuid.UUID(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def normalize_decision_board_source_kind(value: object) -> str | None:
+    source_kind = clean_agent_text(value).lower()
+    if source_kind in {"approved_update", "metadata_risk"}:
+        return source_kind
+    return None
 
 
 def normalize_priority(value: object) -> str | None:

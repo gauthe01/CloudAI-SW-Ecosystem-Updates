@@ -109,13 +109,11 @@ export type PresenterDecisionBoardSignal = {
   partner_name: string | null;
   priority: string | null;
   title: string;
-  action: string;
-  rationale: string;
-  owner: string | null;
-  due_date: string | null;
-  severity: string | null;
-  source_label: string | null;
-  source_url: string | null;
+  update_line: string;
+  action: string | null;
+  source_kind: string | null;
+  update_id: string | null;
+  metadata_risk_id: string | null;
 };
 
 export type PresenterDecisionBoard = {

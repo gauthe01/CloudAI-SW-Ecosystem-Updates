@@ -155,13 +155,11 @@ class PresenterDecisionBoardSignal(BaseModel):
     partner_name: str | None = None
     priority: str | None = None
     title: str
-    action: str
-    rationale: str
-    owner: str | None = None
-    due_date: str | None = None
-    severity: str | None = None
-    source_label: str | None = None
-    source_url: str | None = None
+    update_line: str
+    action: str | None = None
+    source_kind: str | None = None
+    update_id: uuid.UUID | None = None
+    metadata_risk_id: uuid.UUID | None = None
 
 
 class PresenterDecisionBoardResponse(BaseModel):

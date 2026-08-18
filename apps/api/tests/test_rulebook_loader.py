@@ -23,6 +23,14 @@ ACTIVE_ADMIN_RULEBOOKS = {
     "admin_knowledge_upload.microsoft_workstreams_ppt",
 }
 
+ACTIVE_CONTRIBUTOR_RULEBOOKS = {"contributor_file_agent"}
+
+ACTIVE_PRESENTER_RULEBOOKS = {"decision_board"}
+
+ACTIVE_RULEBOOKS = (
+    ACTIVE_ADMIN_RULEBOOKS | ACTIVE_CONTRIBUTOR_RULEBOOKS | ACTIVE_PRESENTER_RULEBOOKS
+)
+
 
 def test_registered_rulebooks_load_from_default_directory() -> None:
     loader = RulebookLoader()
@@ -50,10 +58,14 @@ def test_registered_rulebooks_load_from_default_directory() -> None:
                     "Do not ignore a Jira comment solely because it is "
                     "phrased as a request" in rulebook.body
                 )
-        elif name in ACTIVE_ADMIN_RULEBOOKS:
+        elif name in ACTIVE_RULEBOOKS:
             assert rulebook.status == "active"
             assert rulebook.version
             assert "invent" in rulebook.body.lower()
+            if name == "decision_board":
+                assert "Approved partner updates only" in rulebook.body
+                assert "Priority Rules" in rulebook.body
+                assert "Golden Examples" in rulebook.body
         else:
             assert rulebook.status == "placeholder"
             assert rulebook.version.startswith("placeholder-")

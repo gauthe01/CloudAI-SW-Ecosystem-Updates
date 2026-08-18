@@ -68,6 +68,7 @@ export function PresenterWorkspacePanel({
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [decisionBoardError, setDecisionBoardError] = useState<string | null>(null);
   const cycle = period.cycle;
+  const selectedPartnerScopeKey = [...selectedPartnerIds].sort().join("|");
 
   useEffect(() => {
     let mounted = true;
@@ -105,7 +106,7 @@ export function PresenterWorkspacePanel({
     return () => {
       mounted = false;
     };
-  }, [cycle, period.dateEnd, period.dateStart, search, selectedPartnerIds]);
+  }, [cycle, period.dateEnd, period.dateStart, search, selectedPartnerScopeKey]);
 
   useEffect(() => {
     let mounted = true;
@@ -141,7 +142,7 @@ export function PresenterWorkspacePanel({
     return () => {
       mounted = false;
     };
-  }, [cycle, period.dateEnd, period.dateStart, section, selectedPartnerIds]);
+  }, [cycle, period.dateEnd, period.dateStart, section, selectedPartnerScopeKey]);
 
   useEffect(() => {
     let mounted = true;
@@ -177,7 +178,7 @@ export function PresenterWorkspacePanel({
     return () => {
       mounted = false;
     };
-  }, [cycle, period.dateEnd, period.dateStart, section, selectedPartnerIds]);
+  }, [cycle, period.dateEnd, period.dateStart, section, selectedPartnerScopeKey]);
 
   useEffect(() => {
     if (emailRequestKey <= 0) {
@@ -212,7 +213,7 @@ export function PresenterWorkspacePanel({
       selectedPartnerIds.length === 1
         ? partners.find((partner) => partner.partner_id === selectedPartnerIds[0]) ?? null
         : null,
-    [partners, selectedPartnerIds],
+    [partners, selectedPartnerScopeKey],
   );
   const scopeLabel = selectedPartner
     ? selectedPartner.name
@@ -736,44 +737,39 @@ function DecisionBoardPanel({
               >
                 <div className="decision-board-group-head">
                   <span>{group.label}</span>
-                  <span>{group.items.length}</span>
+                  <span>{group.count}</span>
                 </div>
                 <div className="decision-board-stack">
-                  {group.items.map((item, index) => (
+                  {group.partners.map((partnerGroup) => (
                     <article
                       className={`decision-board-item ${group.priority.toLowerCase()}`}
-                      key={`${item.partner_id ?? item.partner_name ?? "partner"}-${item.title}-${index}`}
+                      key={`${group.priority}-${partnerGroup.partnerId}`}
                     >
                       <div className="decision-board-item-partner">
-                        {renderHighlightedText(item.partner_name ?? "Selected partner", searchTerm)}
+                        {renderHighlightedText(partnerGroup.partnerName, searchTerm)}
                       </div>
-                      <div className="decision-board-item-title">
-                        {renderHighlightedText(item.title, searchTerm)}
-                      </div>
-                      <p className="decision-board-item-action">
-                        <span>Action</span>
-                        {renderHighlightedText(item.action, searchTerm)}
-                      </p>
-                      <p className="decision-board-item-copy">
-                        <span>Rationale</span>
-                        {renderHighlightedText(item.rationale, searchTerm)}
-                      </p>
-                      <div className="decision-board-item-meta">
-                        {item.owner ? <span>Owner: {renderHighlightedText(item.owner, searchTerm)}</span> : null}
-                        {item.due_date ? (
-                          <span>Due: {renderHighlightedText(item.due_date, searchTerm)}</span>
-                        ) : null}
-                        {item.severity ? (
-                          <span>Severity: {renderHighlightedText(item.severity, searchTerm)}</span>
-                        ) : null}
-                        {item.source_url ? (
-                          <a href={item.source_url} target="_blank" rel="noreferrer">
-                            {renderHighlightedText(item.source_label ?? "Source", searchTerm)}
-                          </a>
-                        ) : item.source_label ? (
-                          <span>{renderHighlightedText(item.source_label, searchTerm)}</span>
-                        ) : null}
-                      </div>
+                      <ul className="decision-board-item-list">
+                        {partnerGroup.items.map((item, index) => (
+                          <li
+                            className="decision-board-item-entry"
+                            key={`${item.update_id ?? item.metadata_risk_id ?? item.title}-${index}`}
+                          >
+                            <div className="decision-board-item-title">
+                              {renderHighlightedText(item.title, searchTerm)}
+                            </div>
+                            <p className="decision-board-item-copy">
+                              <span>Update</span>
+                              {renderHighlightedText(item.update_line, searchTerm)}
+                            </p>
+                            {item.action ? (
+                              <p className="decision-board-item-action">
+                                <span>Action</span>
+                                {renderHighlightedText(item.action, searchTerm)}
+                              </p>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
                     </article>
                   ))}
                 </div>
@@ -1576,12 +1572,8 @@ function filterDecisionBoardSignals(
       signal.partner_name,
       signal.priority,
       signal.title,
+      signal.update_line,
       signal.action,
-      signal.rationale,
-      signal.owner,
-      signal.due_date,
-      signal.severity,
-      signal.source_label,
     ]
       .filter(Boolean)
       .join(" ")
@@ -1592,16 +1584,56 @@ function filterDecisionBoardSignals(
 
 function groupDecisionBoardSignals(signals: PresenterDecisionBoardSignal[]) {
   const groups = [
-    { priority: "P1", label: "Critical", items: [] as PresenterDecisionBoardSignal[] },
-    { priority: "P2", label: "Urgent", items: [] as PresenterDecisionBoardSignal[] },
-    { priority: "P3", label: "Watch", items: [] as PresenterDecisionBoardSignal[] },
+    {
+      priority: "P1",
+      label: "Critical",
+      items: [] as PresenterDecisionBoardSignal[],
+    },
+    {
+      priority: "P2",
+      label: "Urgent",
+      items: [] as PresenterDecisionBoardSignal[],
+    },
+    {
+      priority: "P3",
+      label: "Watch",
+      items: [] as PresenterDecisionBoardSignal[],
+    },
   ];
   const fallback = groups[2];
   for (const signal of signals) {
     const group = groups.find((item) => item.priority === signal.priority) ?? fallback;
     group.items.push(signal);
   }
-  return groups.filter((group) => group.items.length > 0);
+  return groups
+    .filter((group) => group.items.length > 0)
+    .map((group) => ({
+      ...group,
+      count: group.items.length,
+      partners: groupDecisionBoardSignalsByPartner(group.items),
+    }));
+}
+
+function groupDecisionBoardSignalsByPartner(signals: PresenterDecisionBoardSignal[]) {
+  const partnerGroups = new Map<
+    string,
+    { partnerId: string; partnerName: string; items: PresenterDecisionBoardSignal[] }
+  >();
+  for (const signal of signals) {
+    const partnerName = signal.partner_name ?? "Selected partner";
+    const partnerId = signal.partner_id ?? `partner:${partnerName}`;
+    const existing = partnerGroups.get(partnerId);
+    if (existing) {
+      existing.items.push(signal);
+    } else {
+      partnerGroups.set(partnerId, {
+        partnerId,
+        partnerName,
+        items: [signal],
+      });
+    }
+  }
+  return Array.from(partnerGroups.values());
 }
 
 function renderHighlightedText(text: string, searchTerm: string): Array<string | ReactElement> {
