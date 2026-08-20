@@ -647,7 +647,7 @@ function ExecutiveSummaryPanel({
   }
   const searchTerm = search.trim();
   const visibleBullets = filterSummaryBullets(summary?.bullets ?? [], searchTerm);
-  const groupedBullets = groupSummaryBullets(visibleBullets);
+  const groupedBullets = groupSummaryBulletsByCategory(visibleBullets);
   return (
     <section className="presenter-panel executive-summary-panel">
       <div className="executive-summary-card">
@@ -669,26 +669,33 @@ function ExecutiveSummaryPanel({
         ) : null}
         {groupedBullets.length ? (
           <div className="executive-summary-groups">
-            {groupedBullets.map((group) =>
-              group.heading ? (
-                <section className="executive-summary-group" key={group.heading}>
-                  <h3>{renderHighlightedText(`${group.heading}:`, searchTerm)}</h3>
-                  <ul className="executive-summary-list nested">
-                    {group.items.map((item) => (
-                      <li key={`${group.heading}-${item}`}>
-                        {renderHighlightedText(item, searchTerm)}
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              ) : (
-                <ul className="executive-summary-list" key="ungrouped">
-                  {group.items.map((item) => (
-                    <li key={item}>{renderHighlightedText(item, searchTerm)}</li>
-                  ))}
-                </ul>
-              ),
-            )}
+            {groupedBullets.map((category) => (
+              <section className="executive-summary-category" key={category.label}>
+                <h3>{renderHighlightedText(category.label, searchTerm)}</h3>
+                <div className="executive-summary-category-body">
+                  {category.partners.map((group) =>
+                    group.heading ? (
+                      <section className="executive-summary-group" key={group.heading}>
+                        <h4>{renderHighlightedText(`${group.heading}:`, searchTerm)}</h4>
+                        <ul className="executive-summary-list nested">
+                          {group.items.map((item) => (
+                            <li key={`${group.heading}-${item}`}>
+                              {renderHighlightedText(item, searchTerm)}
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
+                    ) : (
+                      <ul className="executive-summary-list" key={`${category.label}-ungrouped`}>
+                        {group.items.map((item) => (
+                          <li key={item}>{renderHighlightedText(item, searchTerm)}</li>
+                        ))}
+                      </ul>
+                    ),
+                  )}
+                </div>
+              </section>
+            ))}
           </div>
         ) : null}
         {summary?.source_note && summary.bullets.length ? (
@@ -1577,7 +1584,84 @@ function filterSummaryBullets(bullets: string[], searchTerm: string): string[] {
   return bullets.filter((bullet) => bullet.toLowerCase().includes(cleanedSearch));
 }
 
-function groupSummaryBullets(bullets: string[]) {
+const EXECUTIVE_SUMMARY_CATEGORY_ORDER = [
+  "HyperScalers",
+  "OSVs",
+  "ISVs",
+  "Customers",
+  "Other Partners",
+];
+
+const EXECUTIVE_SUMMARY_PARTNER_CATEGORY: Record<string, string> = {
+  amazon: "HyperScalers",
+  "amazon web services": "HyperScalers",
+  aws: "HyperScalers",
+  gcp: "HyperScalers",
+  google: "HyperScalers",
+  "google cloud": "HyperScalers",
+  microsoft: "HyperScalers",
+  msft: "HyperScalers",
+
+  canonical: "OSVs",
+  redhat: "OSVs",
+  "red hat": "OSVs",
+  rhel: "OSVs",
+  rhat: "OSVs",
+  suse: "OSVs",
+
+  "sap hana cloud": "ISVs",
+  cohere: "ISVs",
+  databricks: "ISVs",
+  elastic: "ISVs",
+  elasticco: "ISVs",
+  mongodb: "ISVs",
+  mistral: "ISVs",
+  nutanix: "ISVs",
+  pinecone: "ISVs",
+  rafay: "ISVs",
+  "rafay systems": "ISVs",
+  redis: "ISVs",
+  tinkerblox: "ISVs",
+  tinklrbox: "ISVs",
+  vmware: "ISVs",
+
+  jpmc: "Customers",
+  "jp morgan": "Customers",
+  "jp morgan chase": "Customers",
+  optum: "Customers",
+  salesforce: "Customers",
+  teradata: "Customers",
+  uber: "Customers",
+  uhg: "Customers",
+  "united health group": "Customers",
+};
+
+function groupSummaryBulletsByCategory(bullets: string[]) {
+  const partnerGroups = groupSummaryBulletsByPartner(bullets);
+  const categoryMap = new Map<
+    string,
+    { label: string; partners: Array<{ heading: string | null; items: string[] }> }
+  >();
+
+  for (const group of partnerGroups) {
+    const categoryLabel = group.heading
+      ? executiveSummaryCategoryForPartner(group.heading)
+      : "Other Partners";
+    const existing = categoryMap.get(categoryLabel);
+    if (existing) {
+      existing.partners.push(group);
+    } else {
+      categoryMap.set(categoryLabel, { label: categoryLabel, partners: [group] });
+    }
+  }
+
+  return EXECUTIVE_SUMMARY_CATEGORY_ORDER.flatMap((label) => {
+    const category = categoryMap.get(label);
+    return category ? [category] : [];
+  });
+}
+
+function groupSummaryBulletsByPartner(bullets: string[]) {
   const groups: Array<{ heading: string | null; items: string[] }> = [];
   const groupIndex = new Map<string, { heading: string | null; items: string[] }>();
   for (const bullet of bullets) {
@@ -1601,6 +1685,19 @@ function groupSummaryBullets(bullets: string[]) {
     }
   }
   return groups;
+}
+
+function executiveSummaryCategoryForPartner(partnerName: string): string {
+  const normalizedName = normalizeExecutiveSummaryPartnerName(partnerName);
+  return EXECUTIVE_SUMMARY_PARTNER_CATEGORY[normalizedName] ?? "Other Partners";
+}
+
+function normalizeExecutiveSummaryPartnerName(partnerName: string): string {
+  return partnerName
+    .trim()
+    .toLowerCase()
+    .replace(/\./g, "")
+    .replace(/\s+/g, " ");
 }
 
 function parseSummaryBulletLeadIn(bullet: string): { heading: string; item: string } | null {

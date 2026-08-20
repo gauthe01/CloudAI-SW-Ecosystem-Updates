@@ -3693,7 +3693,7 @@ h1 {
 
 .executive-summary-groups {
   display: grid;
-  gap: 16px;
+  gap: 22px;
   padding: 18px 24px 20px;
 }
 
@@ -3701,12 +3701,30 @@ h1 {
   padding: 0 0 0 16px;
 }
 
+.executive-summary-category {
+  display: grid;
+  gap: 12px;
+}
+
+.executive-summary-category > h3 {
+  margin: 0;
+  color: #102f45;
+  font-size: 16px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.executive-summary-category-body {
+  display: grid;
+  gap: 14px;
+}
+
 .executive-summary-group {
   display: grid;
   gap: 8px;
 }
 
-.executive-summary-group h3 {
+.executive-summary-group h4 {
   margin: 0;
   color: #0088ad;
   font-size: 15px;

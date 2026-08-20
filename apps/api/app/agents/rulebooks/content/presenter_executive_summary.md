@@ -38,14 +38,16 @@ summary facts.
 
 ## Structure Rules
 
-Match the structure and density of the reference monthly status emails:
+Match the density of the reference monthly status emails:
 
-- Use partner-led or category-led bullets such as `Google: ...`,
-  `Microsoft: ...`, `AWS: ...`, `ISVs: ...`, `Programs: ...`, or
-  `Events: ...`.
-- Use the exact same lead-in before the colon for multiple bullets about the
-  same partner or category. The UI groups repeated lead-ins into one visible
-  heading such as `Google:` with nested bullets underneath.
+- Use partner-led bullets such as `Google: ...`, `Microsoft: ...`,
+  `AWS: ...`, or `Redis: ...`.
+- Do not use category lead-ins such as `ISVs: ...`, `OSVs: ...`,
+  `HyperScalers: ...`, or `Customers: ...`. The UI groups partner-led bullets
+  into these categories deterministically.
+- Use the exact same partner lead-in before the colon for multiple bullets about
+  the same partner. The UI groups repeated lead-ins into one visible heading
+  such as `Google:` with nested bullets underneath.
 - For all-partner scope, mention summarized updates across all partners that
   have meaningful approved updates in the selected period.
 - Do not combine facts across separate approved updates. Each output bullet must
