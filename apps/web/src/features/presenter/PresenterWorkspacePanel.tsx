@@ -647,6 +647,7 @@ function ExecutiveSummaryPanel({
   }
   const searchTerm = search.trim();
   const visibleBullets = filterSummaryBullets(summary?.bullets ?? [], searchTerm);
+  const groupedBullets = groupSummaryBullets(visibleBullets);
   return (
     <section className="presenter-panel executive-summary-panel">
       <div className="executive-summary-card">
@@ -666,12 +667,29 @@ function ExecutiveSummaryPanel({
         {!error && summary?.bullets.length && !visibleBullets.length ? (
           <p className="executive-summary-empty">No executive summary lines match the search term.</p>
         ) : null}
-        {visibleBullets.length ? (
-          <ul className="executive-summary-list">
-            {visibleBullets.map((item) => (
-              <li key={item}>{renderHighlightedText(item, searchTerm)}</li>
-            ))}
-          </ul>
+        {groupedBullets.length ? (
+          <div className="executive-summary-groups">
+            {groupedBullets.map((group) =>
+              group.heading ? (
+                <section className="executive-summary-group" key={group.heading}>
+                  <h3>{renderHighlightedText(`${group.heading}:`, searchTerm)}</h3>
+                  <ul className="executive-summary-list nested">
+                    {group.items.map((item) => (
+                      <li key={`${group.heading}-${item}`}>
+                        {renderHighlightedText(item, searchTerm)}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ) : (
+                <ul className="executive-summary-list" key="ungrouped">
+                  {group.items.map((item) => (
+                    <li key={item}>{renderHighlightedText(item, searchTerm)}</li>
+                  ))}
+                </ul>
+              ),
+            )}
+          </div>
         ) : null}
         {summary?.source_note && summary.bullets.length ? (
           <p className="executive-summary-note">{summary.source_note}</p>
@@ -1557,6 +1575,45 @@ function filterSummaryBullets(bullets: string[], searchTerm: string): string[] {
     return bullets;
   }
   return bullets.filter((bullet) => bullet.toLowerCase().includes(cleanedSearch));
+}
+
+function groupSummaryBullets(bullets: string[]) {
+  const groups: Array<{ heading: string | null; items: string[] }> = [];
+  const groupIndex = new Map<string, { heading: string | null; items: string[] }>();
+  for (const bullet of bullets) {
+    const parsed = parseSummaryBulletLeadIn(bullet);
+    if (!parsed) {
+      const ungrouped = groups.find((group) => group.heading === null);
+      if (ungrouped) {
+        ungrouped.items.push(bullet);
+      } else {
+        groups.push({ heading: null, items: [bullet] });
+      }
+      continue;
+    }
+    const existing = groupIndex.get(parsed.heading);
+    if (existing) {
+      existing.items.push(parsed.item);
+    } else {
+      const group = { heading: parsed.heading, items: [parsed.item] };
+      groupIndex.set(parsed.heading, group);
+      groups.push(group);
+    }
+  }
+  return groups;
+}
+
+function parseSummaryBulletLeadIn(bullet: string): { heading: string; item: string } | null {
+  const match = /^([^:]{2,80}):\s+(.+)$/.exec(bullet.trim());
+  if (!match) {
+    return null;
+  }
+  const heading = match[1].trim();
+  const item = match[2].trim();
+  if (!heading || !item || /^https?\/\//i.test(heading)) {
+    return null;
+  }
+  return { heading, item };
 }
 
 function filterDecisionBoardSignals(

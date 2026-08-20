@@ -25,7 +25,7 @@ ACTIVE_ADMIN_RULEBOOKS = {
 
 ACTIVE_CONTRIBUTOR_RULEBOOKS = {"contributor_file_agent"}
 
-ACTIVE_PRESENTER_RULEBOOKS = {"decision_board"}
+ACTIVE_PRESENTER_RULEBOOKS = {"decision_board", "presenter_executive_summary"}
 
 ACTIVE_RULEBOOKS = (
     ACTIVE_ADMIN_RULEBOOKS | ACTIVE_CONTRIBUTOR_RULEBOOKS | ACTIVE_PRESENTER_RULEBOOKS
@@ -66,6 +66,10 @@ def test_registered_rulebooks_load_from_default_directory() -> None:
                 assert "Approved partner updates only" in rulebook.body
                 assert "Priority Rules" in rulebook.body
                 assert "Golden Examples" in rulebook.body
+            if name == "presenter_executive_summary":
+                assert "monthly CSP RAMP status emails" in rulebook.body
+                assert "Do not include source links" in rulebook.body
+                assert "Preserve dates" in rulebook.body
         else:
             assert rulebook.status == "placeholder"
             assert rulebook.version.startswith("placeholder-")

@@ -14,11 +14,15 @@ from app.db.models.partner_metadata import (
     PartnerResourceLink,
     ResourceLinkSourceKind,
 )
-from app.db.models.partner_update import PartnerUpdate, PartnerUpdateStatus
+from app.db.models.partner_update import PartnerUpdate, PartnerUpdateSourceType, PartnerUpdateStatus
 from app.db.models.topic_update import TopicUpdate, TopicUpdateStatus
 from app.db.session import get_session_factory
 from app.domains.presenter import service as presenter_service
-from app.domains.presenter.service import PresenterService, parse_decision_board_response
+from app.domains.presenter.service import (
+    PresenterService,
+    build_executive_summary_payload,
+    parse_decision_board_response,
+)
 
 
 class FakeDecisionBoardRuntime:
@@ -101,6 +105,88 @@ def test_decision_board_parser_accepts_interview_card_shape() -> None:
     assert signals[0].action is None
     assert signals[0].update_id == update_id
     assert signals[1].action == "Confirm campaign input owner"
+
+
+def test_executive_summary_payload_excludes_source_fields() -> None:
+    update = presenter_service.PresenterUpdateResponse(
+        update_id=uuid.uuid4(),
+        partner_id=uuid.uuid4(),
+        partner_name="Google",
+        scope="partner",
+        topic_label=None,
+        cycle="2026-04",
+        title="Cloud Next planning",
+        summary=(
+            "Google Cloud Next is planned for April 21-23 with Arm booth demos "
+            "and customer workshop."
+        ),
+        source_type=PartnerUpdateSourceType.email,
+        source_label="Source",
+        source_url="https://example.com/source",
+        approved_at=None,
+        approved_by=None,
+    )
+
+    payload = build_executive_summary_payload(
+        cycle="2026-04",
+        date_start=None,
+        date_end=None,
+        scoped_partner_ids=[],
+        updates=[update],
+        rulebook_body="Do not include source links.",
+        rulebook_trace_version="active:test",
+    )
+
+    approved_update = payload["approved_updates"][0]
+    assert "source_label" not in approved_update
+    assert "source_url" not in approved_update
+    assert "approved_at" not in approved_update
+    assert approved_update["partner_name"] == "Google"
+    assert "April 21-23" in approved_update["summary"]
+
+
+@pytest.mark.asyncio
+async def test_executive_summary_model_content_is_cached_for_identical_payloads() -> None:
+    presenter_service._EXECUTIVE_SUMMARY_CONTENT_CACHE.clear()
+    presenter_service._EXECUTIVE_SUMMARY_IN_FLIGHT.clear()
+    fake_client = FakeDecisionBoardClient(
+        '{"bullets":["Google: Cloud Next is planned for April 21-23."],"source_note":null}'
+    )
+    runtime = FakeDecisionBoardRuntime(fake_client)
+    payload = {
+        "task": "presenter_executive_summary",
+        "scope": {"cycle": "2026-04", "partner_ids": []},
+        "approved_updates": [
+            {
+                "update_id": str(uuid.uuid4()),
+                "partner_id": str(uuid.uuid4()),
+                "partner_name": "Google",
+                "title": "Cloud Next planning",
+                "summary": "Google Cloud Next is planned for April 21-23.",
+            }
+        ],
+    }
+
+    first, second = await asyncio.gather(
+        presenter_service.cached_executive_summary_model_content(
+            runtime=runtime,
+            model="reporting-model",
+            payload=payload,
+        ),
+        presenter_service.cached_executive_summary_model_content(
+            runtime=runtime,
+            model="reporting-model",
+            payload=payload,
+        ),
+    )
+    third = await presenter_service.cached_executive_summary_model_content(
+        runtime=runtime,
+        model="reporting-model",
+        payload=payload,
+    )
+
+    assert first == second == third
+    assert fake_client.calls == 1
 
 
 @pytest.mark.asyncio

@@ -3691,6 +3691,35 @@ h1 {
   line-height: 1.55;
 }
 
+.executive-summary-groups {
+  display: grid;
+  gap: 16px;
+  padding: 18px 24px 20px;
+}
+
+.executive-summary-groups > .executive-summary-list {
+  padding: 0 0 0 16px;
+}
+
+.executive-summary-group {
+  display: grid;
+  gap: 8px;
+}
+
+.executive-summary-group h3 {
+  margin: 0;
+  color: #0088ad;
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.executive-summary-list.nested {
+  padding: 0 0 0 18px;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
 .executive-summary-list li {
   margin-bottom: 11px;
 }

@@ -44,6 +44,9 @@ from app.domains.presenter.schemas import (
 DECISION_BOARD_CACHE_MAX_ITEMS = 128
 _DECISION_BOARD_CONTENT_CACHE: dict[str, str] = {}
 _DECISION_BOARD_IN_FLIGHT: dict[str, asyncio.Task[str]] = {}
+EXECUTIVE_SUMMARY_CACHE_MAX_ITEMS = 128
+_EXECUTIVE_SUMMARY_CONTENT_CACHE: dict[str, str] = {}
+_EXECUTIVE_SUMMARY_IN_FLIGHT: dict[str, asyncio.Task[str]] = {}
 
 
 class PresenterService:
@@ -409,18 +412,10 @@ class PresenterService:
         )
 
         try:
-            response = await runtime.client.chat.completions.create(
+            content = await cached_executive_summary_model_content(
+                runtime=runtime,
                 model=model,
-                messages=[
-                    {"role": "system", "content": executive_summary_system_prompt()},
-                    {
-                        "role": "user",
-                        "content": json.dumps(payload, sort_keys=True, default=str),
-                    },
-                ],
-                response_format={"type": "json_object"},
-                temperature=0,
-                max_tokens=900,
+                payload=payload,
             )
         except Exception as exc:
             raise HTTPException(
@@ -428,7 +423,6 @@ class PresenterService:
                 detail=f"Executive summary agent failed: {exc}",
             ) from exc
 
-        content = response.choices[0].message.content or "{}"
         parsed = parse_executive_summary_response(content)
         return PresenterExecutiveSummaryResponse(
             cycle=cycle,
@@ -1033,11 +1027,15 @@ def parse_presenter_ask_answer(content: str) -> str:
 def executive_summary_system_prompt() -> str:
     return (
         "You are the presenter executive summary agent for Cloud AI Software Ecosystem Updates.\n"
-        "Use only the supplied approved updates and rulebook. Do not use model memory, "
-        "outside knowledge, metadata, decision-board data, or assumptions.\n"
+        "Use only approved update titles and approved update summaries from the supplied JSON. "
+        "Do not use model memory, outside knowledge, metadata, partner status, decision-board "
+        "data, source links, approval timestamps, reporting month, or assumptions as summary "
+        "facts.\n"
         "Return JSON only with this shape: {\"bullets\": [\"...\"], \"source_note\": \"...\"}.\n"
         "If there are no usable approved update facts, return an empty bullets array. "
-        "Preserve quantitative facts and source links when they are supplied."
+        "Compress approved updates into monthly status-email style bullets without synthesis. "
+        "Preserve dates and quantitative facts that appear in the title or summary. Do not "
+        "include source labels, markdown links, or raw URLs."
     )
 
 
@@ -1057,7 +1055,7 @@ def build_executive_summary_payload(
             "cycle": cycle,
             "date_start": date_start.isoformat() if date_start else None,
             "date_end": date_end.isoformat() if date_end else None,
-            "partner_ids": [str(partner_id) for partner_id in scoped_partner_ids],
+            "partner_ids": sorted(str(partner_id) for partner_id in scoped_partner_ids),
             "partner_scope": "selected" if scoped_partner_ids else "all_partners",
         },
         "rulebook": {
@@ -1074,18 +1072,84 @@ def build_executive_summary_payload(
                 "cycle": update.cycle,
                 "title": update.title,
                 "summary": strip_html(update.summary),
-                "source_type": update.source_type.value,
-                "source_label": update.source_label,
-                "source_url": update.source_url,
-                "approved_at": update.approved_at.isoformat() if update.approved_at else None,
             }
             for update in updates[:80]
         ],
         "output_contract": {
-            "bullets": "3-6 concise executive bullets, each grounded in approved updates.",
-            "source_note": "Optional short scope/data note.",
+            "bullets": (
+                "Concise monthly-status bullets grounded in approved updates. Preserve dates "
+                "and quantitative details. Do not include source labels, markdown links, or URLs."
+            ),
+            "source_note": "Use only when no usable approved update facts are available.",
         },
     }
+
+
+async def cached_executive_summary_model_content(
+    *,
+    runtime: AIClientRuntime,
+    model: str,
+    payload: dict[str, object],
+) -> str:
+    cache_key = executive_summary_cache_key(model=model, payload=payload)
+    cached = _EXECUTIVE_SUMMARY_CONTENT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    task = _EXECUTIVE_SUMMARY_IN_FLIGHT.get(cache_key)
+    if task is None:
+        task = asyncio.create_task(
+            fetch_executive_summary_model_content(
+                runtime=runtime,
+                model=model,
+                payload=payload,
+            )
+        )
+        _EXECUTIVE_SUMMARY_IN_FLIGHT[cache_key] = task
+
+    try:
+        content = await task
+    finally:
+        if task.done() and _EXECUTIVE_SUMMARY_IN_FLIGHT.get(cache_key) is task:
+            _EXECUTIVE_SUMMARY_IN_FLIGHT.pop(cache_key, None)
+
+    parse_executive_summary_response(content)
+    _EXECUTIVE_SUMMARY_CONTENT_CACHE[cache_key] = content
+    while len(_EXECUTIVE_SUMMARY_CONTENT_CACHE) > EXECUTIVE_SUMMARY_CACHE_MAX_ITEMS:
+        _EXECUTIVE_SUMMARY_CONTENT_CACHE.pop(next(iter(_EXECUTIVE_SUMMARY_CONTENT_CACHE)))
+    return content
+
+
+async def fetch_executive_summary_model_content(
+    *,
+    runtime: AIClientRuntime,
+    model: str,
+    payload: dict[str, object],
+) -> str:
+    response = await runtime.client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": executive_summary_system_prompt()},
+            {
+                "role": "user",
+                "content": json.dumps(payload, sort_keys=True, default=str),
+            },
+        ],
+        response_format={"type": "json_object"},
+        temperature=0,
+        max_tokens=1600,
+    )
+    return response.choices[0].message.content or "{}"
+
+
+def executive_summary_cache_key(*, model: str, payload: dict[str, object]) -> str:
+    serialized = json.dumps(
+        {"model": model, "payload": payload},
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def parse_executive_summary_response(content: str) -> dict[str, list[str] | str | None]:
@@ -1106,7 +1170,7 @@ def parse_executive_summary_response(content: str) -> dict[str, list[str] | str 
     raw_bullets = parsed.get("bullets") or []
     if not isinstance(raw_bullets, list):
         raw_bullets = []
-    bullets = [" ".join(str(item).split()) for item in raw_bullets[:8] if str(item).strip()]
+    bullets = [" ".join(str(item).split()) for item in raw_bullets[:16] if str(item).strip()]
     source_note = parsed.get("source_note")
     cleaned_note = " ".join(str(source_note).split()) if source_note else None
     return {"bullets": bullets, "source_note": cleaned_note}
