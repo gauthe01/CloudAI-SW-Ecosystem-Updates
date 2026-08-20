@@ -2,9 +2,21 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.runtime.client import AIRuntimeConfigurationError, build_ai_client_runtime
+from app.core.config import get_settings
 from app.db.models.identity import RoleType
 from app.db.session import get_db_session
 from app.domains.identity.dependencies import require_roles
@@ -22,10 +34,22 @@ from app.domains.presenter.schemas import (
     PresenterMetadataResponse,
     PresenterPartnerListResponse,
     PresenterUpdateListResponse,
+    PresenterVoiceSpeechRequest,
+    PresenterVoiceTranscriptResponse,
 )
 from app.domains.presenter.service import PresenterService
 
 router = APIRouter(prefix="/api/presenter", tags=["presenter"])
+
+VOICE_AUDIO_MAX_BYTES = 8 * 1024 * 1024
+VOICE_AUDIO_MAX_DURATION_MS = 60_000
+VOICE_AUDIO_CONTENT_TYPES = {
+    "audio/webm",
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/wav",
+    "audio/x-m4a",
+}
 
 
 def get_presenter_service(
@@ -134,6 +158,93 @@ async def ask_presenter_ai(
     )
 
 
+@router.post("/ask/voice/transcribe", response_model=PresenterVoiceTranscriptResponse)
+async def transcribe_presenter_ai_voice(
+    _: Annotated[UserResponse, Depends(require_roles(RoleType.presenter))],
+    audio: Annotated[UploadFile, File()],
+    duration_ms: Annotated[int | None, Form()] = None,
+) -> PresenterVoiceTranscriptResponse:
+    if duration_ms is not None and duration_ms > VOICE_AUDIO_MAX_DURATION_MS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Audio is longer than 60 seconds.",
+        )
+    content_type = (audio.content_type or "").split(";", 1)[0].strip().lower()
+    if content_type not in VOICE_AUDIO_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported audio type.",
+        )
+    data = await audio.read()
+    if not data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Audio is empty.")
+    if len(data) > VOICE_AUDIO_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Audio is larger than 8 MB.",
+        )
+    try:
+        runtime = build_ai_client_runtime()
+    except AIRuntimeConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    try:
+        transcript = await runtime.client.audio.transcriptions.create(
+            model=get_settings().ai_model_audio_transcription,
+            file=(audio.filename or "question.webm", data, content_type),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not transcribe audio: {exc}",
+        ) from exc
+    text = " ".join((getattr(transcript, "text", "") or "").split())
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No speech detected.",
+        )
+    return PresenterVoiceTranscriptResponse(text=text)
+
+
+@router.post("/ask/voice/speech")
+async def synthesize_presenter_ai_voice(
+    payload: PresenterVoiceSpeechRequest,
+    _: Annotated[UserResponse, Depends(require_roles(RoleType.presenter))],
+) -> Response:
+    text = " ".join(payload.text.split())
+    if len(text) > 1600:
+        text = text[:1600].rsplit(" ", 1)[0] + "..."
+    try:
+        runtime = build_ai_client_runtime()
+    except AIRuntimeConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    try:
+        speech = await runtime.client.audio.speech.create(
+            model=get_settings().ai_model_audio_speech,
+            voice=get_settings().ai_audio_voice,
+            input=text,
+            response_format="mp3",
+        )
+        audio_bytes = await read_audio_response_bytes(speech)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not generate speech: {exc}",
+        ) from exc
+    if not audio_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not generate speech.",
+        )
+    return Response(content=audio_bytes, media_type="audio/mpeg")
+
+
 @router.post("/executive-summary", response_model=PresenterExecutiveSummaryResponse)
 async def generate_presenter_executive_summary(
     payload: PresenterExecutiveSummaryRequest,
@@ -162,3 +273,19 @@ async def generate_presenter_decision_board(
         date_start=payload.date_start,
         date_end=payload.date_end,
     )
+
+
+async def read_audio_response_bytes(response: object) -> bytes:
+    if hasattr(response, "read"):
+        content = response.read()
+        if hasattr(content, "__await__"):
+            content = await content
+        return bytes(content or b"")
+    content = getattr(response, "content", None)
+    if hasattr(content, "__await__"):
+        content = await content
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content)
+    if isinstance(response, (bytes, bytearray)):
+        return bytes(response)
+    return b""

@@ -89,6 +89,27 @@ export type DraftEmail = {
 
 export type PresenterAskAnswer = {
   answer: string;
+  confidence: "high" | "medium" | "low" | string;
+  sections: Array<{
+    title: string;
+    body: string | null;
+    bullets: string[];
+  }>;
+  bullets: string[];
+  tables: Array<{
+    title: string | null;
+    columns: string[];
+    rows: string[][];
+  }>;
+  citations: Array<{
+    citation_id: string;
+    kind: string;
+    partner_name: string | null;
+    title: string | null;
+    summary: string | null;
+    cycle: string | null;
+  }>;
+  suggested_followups: string[];
   grounded: boolean;
   model: string | null;
 };
@@ -304,6 +325,43 @@ export async function askPresenterAi({
   }
 
   return response.json();
+}
+
+export async function transcribePresenterAiVoice({
+  audio,
+  durationMs,
+}: {
+  audio: Blob;
+  durationMs: number;
+}): Promise<string> {
+  const formData = new FormData();
+  formData.append("audio", audio, "question.webm");
+  formData.append("duration_ms", String(durationMs));
+  const response = await fetch(`${apiBaseUrl}/api/presenter/ask/voice/transcribe`, {
+    method: "POST",
+    credentials: "include",
+    body: formData,
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? "Unable to transcribe voice question.");
+  }
+  const payload = (await response.json()) as { text: string };
+  return payload.text;
+}
+
+export async function synthesizePresenterAiVoice(text: string): Promise<Blob> {
+  const response = await fetch(`${apiBaseUrl}/api/presenter/ask/voice/speech`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? "Unable to generate voice reply.");
+  }
+  return response.blob();
 }
 
 export async function generatePresenterExecutiveSummary({

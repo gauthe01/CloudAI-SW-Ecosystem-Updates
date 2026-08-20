@@ -70,6 +70,12 @@ class Settings(BaseSettings):
         alias="AI_MODEL_UPDATE_EXTRACTION",
     )
     ai_model_reporting: str | None = Field(default=None, alias="AI_MODEL_REPORTING")
+    ai_model_audio_transcription: str = Field(
+        default="whisper-1",
+        alias="AI_MODEL_AUDIO_TRANSCRIPTION",
+    )
+    ai_model_audio_speech: str = Field(default="tts-1", alias="AI_MODEL_AUDIO_SPEECH")
+    ai_audio_voice: str = Field(default="alloy", alias="AI_AUDIO_VOICE")
     ai_timeout_seconds: float = Field(default=45.0, alias="AI_TIMEOUT_SECONDS")
     ai_max_retries: int = Field(default=2, alias="AI_MAX_RETRIES")
     ai_ca_bundle: str | None = Field(default=None, alias="AI_CA_BUNDLE")

@@ -4,8 +4,10 @@ import json
 import re
 import uuid
 from collections import Counter
+from dataclasses import dataclass
 from datetime import date
 from html import unescape
+from typing import Any
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
@@ -30,7 +32,10 @@ from app.domains.presenter.schemas import (
     DecisionBoardItem,
     DraftEmailResponse,
     PresenterAnalysisResponse,
+    PresenterAskCitation,
     PresenterAskResponse,
+    PresenterAskSection,
+    PresenterAskTable,
     PresenterDecisionBoardResponse,
     PresenterDecisionBoardSignal,
     PresenterExecutiveSummaryResponse,
@@ -47,6 +52,117 @@ _DECISION_BOARD_IN_FLIGHT: dict[str, asyncio.Task[str]] = {}
 EXECUTIVE_SUMMARY_CACHE_MAX_ITEMS = 128
 _EXECUTIVE_SUMMARY_CONTENT_CACHE: dict[str, str] = {}
 _EXECUTIVE_SUMMARY_IN_FLIGHT: dict[str, asyncio.Task[str]] = {}
+PRESENTER_ASK_CACHE_MAX_ITEMS = 128
+_PRESENTER_ASK_CONTENT_CACHE: dict[str, str] = {}
+_PRESENTER_ASK_IN_FLIGHT: dict[str, asyncio.Task[str]] = {}
+
+ASK_STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "all",
+    "also",
+    "and",
+    "any",
+    "are",
+    "based",
+    "been",
+    "before",
+    "between",
+    "but",
+    "can",
+    "could",
+    "cycle",
+    "did",
+    "does",
+    "for",
+    "from",
+    "had",
+    "has",
+    "have",
+    "how",
+    "into",
+    "latest",
+    "more",
+    "need",
+    "needs",
+    "now",
+    "our",
+    "out",
+    "partner",
+    "partners",
+    "please",
+    "should",
+    "show",
+    "that",
+    "the",
+    "their",
+    "them",
+    "there",
+    "this",
+    "update",
+    "updates",
+    "was",
+    "what",
+    "when",
+    "where",
+    "which",
+    "will",
+    "with",
+}
+ASK_LIST_PHRASES = ("list all", "show all", "all updates", "full list", "complete list")
+ASK_CHANGE_PHRASES = (
+    "what changed",
+    "what happened",
+    "changed this cycle",
+    "changes this cycle",
+)
+ASK_LOOKAHEAD_PHRASES = ("next month", "coming up", "upcoming", "next steps", "future")
+ASK_RISK_TERMS = ("risk", "risks", "blocker", "blockers", "ask", "asks", "action", "actions")
+ASK_METADATA_TERMS = (
+    "status",
+    "goal",
+    "goals",
+    "priority",
+    "timeline",
+    "resource",
+    "resources",
+)
+ASK_LOOKAHEAD_EVIDENCE_TERMS = ("next", "upcoming", "planned", "due", "timeline", "scheduled")
+ASK_RISK_EVIDENCE_TERMS = ("risk", "block", "ask", "action", "owner", "due", "decision")
+
+
+@dataclass(frozen=True)
+class PresenterAskEvidence:
+    citation_id: str
+    kind: str
+    partner_id: str | None
+    partner_name: str | None
+    title: str
+    text: str
+    cycle: str | None
+    score: int = 0
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "citation_id": self.citation_id,
+            "kind": self.kind,
+            "partner_id": self.partner_id,
+            "partner_name": self.partner_name,
+            "title": self.title,
+            "text": self.text,
+            "cycle": self.cycle,
+        }
+
+    def citation(self) -> PresenterAskCitation:
+        return PresenterAskCitation(
+            citation_id=self.citation_id,
+            kind=self.kind,
+            partner_name=self.partner_name,
+            title=self.title,
+            summary=self.text[:360],
+            cycle=self.cycle,
+        )
 
 
 class PresenterService:
@@ -315,6 +431,39 @@ class PresenterService:
             date_end=date_end,
             search=None,
         )
+        metadata_context = await self._metadata_context(
+            cycle=cycle,
+            partner_ids=scoped_partner_ids,
+            date_start=date_start,
+            date_end=date_end,
+        )
+
+        intent = classify_presenter_ask_intent(cleaned_question)
+        if intent == "casual":
+            return PresenterAskResponse(
+                answer=(
+                    "Ask me about approved updates, partner metadata, risks, asks, "
+                    "or what changed in the selected period."
+                ),
+                confidence="high",
+                suggested_followups=[
+                    "What changed this cycle?",
+                    "Summarize the biggest risks and asks.",
+                    "What is coming up next month?",
+                ],
+                grounded=True,
+                model=None,
+            )
+
+        deterministic = deterministic_presenter_ask_response(
+            question=cleaned_question,
+            intent=intent,
+            cycle=cycle,
+            updates=updates,
+            metadata_context=metadata_context,
+        )
+        if deterministic is not None:
+            return deterministic
 
         try:
             runtime = build_ai_client_runtime()
@@ -332,24 +481,18 @@ class PresenterService:
             date_start=date_start,
             date_end=date_end,
             scoped_partner_ids=scoped_partner_ids,
+            intent=intent,
             updates=updates,
+            metadata_context=metadata_context,
             rulebook_body=rulebook.body,
             rulebook_trace_version=rulebook.trace_version,
         )
 
         try:
-            response = await runtime.client.chat.completions.create(
+            content = await cached_presenter_ask_model_content(
+                runtime=runtime,
                 model=model,
-                messages=[
-                    {"role": "system", "content": presenter_ask_system_prompt()},
-                    {
-                        "role": "user",
-                        "content": json.dumps(payload, sort_keys=True, default=str),
-                    },
-                ],
-                response_format={"type": "json_object"},
-                temperature=0,
-                max_tokens=900,
+                payload=payload,
             )
         except Exception as exc:
             raise HTTPException(
@@ -357,9 +500,9 @@ class PresenterService:
                 detail=f"AI assistant failed to answer: {exc}",
             ) from exc
 
-        content = response.choices[0].message.content or "{}"
-        answer = parse_presenter_ask_answer(content)
-        return PresenterAskResponse(answer=answer, grounded=True, model=model)
+        parsed = parse_presenter_ask_answer(content, citation_catalog=payload["_citation_catalog"])
+        parsed.model = model
+        return parsed
 
     async def generate_executive_summary(
         self,
@@ -947,13 +1090,17 @@ def normalize_link_html_for_email(value: str) -> str:
 def presenter_ask_system_prompt() -> str:
     return (
         "You are the presenter Ask AI assistant for Cloud AI Software Ecosystem Updates.\n"
-        "Use only the supplied JSON context and rulebook. Do not use model memory, outside "
-        "knowledge, assumptions, or invented bridge text for factual claims.\n"
-        "If the context does not answer the question, answer exactly: "
-        "\"I do not see that in the selected approved updates.\"\n"
-        "Return JSON only with this shape: {\"answer\": \"plain text or simple markdown\"}.\n"
-        "Preserve quantitative facts and relevant links. Do not combine distinct facts with "
-        "semicolons; use separate bullets instead."
+        "Use only the supplied JSON evidence and rulebook. Do not use model memory, "
+        "outside knowledge, assumptions, or raw context not supplied in the packet.\n"
+        "Answer the user's question directly. Do not dump every evidence item.\n"
+        "Keep the main answer to one or two presenter-ready sentences unless the user "
+        "explicitly asks for a list.\n"
+        "If evidence is insufficient, say exactly what is missing in the selected scope.\n"
+        "Return JSON only with this shape: {\"answer\":\"...\",\"confidence\":\"high|medium|low\","
+        "\"sections\":[{\"title\":\"...\",\"body\":\"...\",\"bullets\":[\"...\"]}],"
+        "\"bullets\":[\"...\"],\"tables\":[{\"title\":\"...\",\"columns\":[\"...\"],"
+        "\"rows\":[[\"...\"]]}],\"citations\":[{\"citation_id\":\"...\"}],"
+        "\"suggested_followups\":[\"...\"]}."
     )
 
 
@@ -964,12 +1111,23 @@ def build_presenter_ask_payload(
     date_start: date | None,
     date_end: date | None,
     scoped_partner_ids: list[uuid.UUID],
+    intent: str,
     updates: list[PresenterUpdateResponse],
+    metadata_context: list[dict[str, object]],
     rulebook_body: str,
     rulebook_trace_version: str,
 ) -> dict[str, object]:
+    selected_evidence = select_presenter_ask_evidence(
+        question=question,
+        intent=intent,
+        updates=updates,
+        metadata_context=metadata_context,
+    )
+    citation_catalog = {item.citation_id: item.citation() for item in selected_evidence}
     return {
+        "task": "presenter_ask_ai",
         "question": question,
+        "intent": intent,
         "scope": {
             "cycle": cycle,
             "date_start": date_start.isoformat() if date_start else None,
@@ -981,33 +1139,22 @@ def build_presenter_ask_payload(
             "trace_version": rulebook_trace_version,
             "body": rulebook_body,
         },
-        "approved_updates": [
-            {
-                "update_id": str(update.update_id),
-                "partner_id": str(update.partner_id) if update.partner_id else None,
-                "partner_name": update.partner_name,
-                "scope": update.scope,
-                "topic_label": update.topic_label,
-                "cycle": update.cycle,
-                "title": update.title,
-                "summary": strip_html(update.summary),
-                "source_type": update.source_type.value,
-                "source_label": update.source_label,
-                "source_url": update.source_url,
-                "approved_at": update.approved_at.isoformat() if update.approved_at else None,
-            }
-            for update in updates[:80]
-        ],
+        "evidence": [item.payload() for item in selected_evidence],
         "output_contract": {
-            "answer": (
-                "Grounded answer only. Use bullets for multiple facts. Use markdown links "
-                "only when the URL is supplied in context."
-            ),
+            "answer": "Direct presenter answer. Do not repeat all evidence.",
+            "sections": "Use only for grouping multiple answer parts.",
+            "bullets": "Use only when the user asks for multiple facts or risks.",
+            "citations": "Use citation_id values from supplied evidence only.",
         },
+        "_citation_catalog": citation_catalog,
     }
 
 
-def parse_presenter_ask_answer(content: str) -> str:
+def parse_presenter_ask_answer(
+    content: str,
+    *,
+    citation_catalog: dict[str, PresenterAskCitation],
+) -> PresenterAskResponse:
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
@@ -1015,13 +1162,457 @@ def parse_presenter_ask_answer(content: str) -> str:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="AI assistant returned an invalid response.",
         ) from exc
-    answer = str(parsed.get("answer") or "").strip() if isinstance(parsed, dict) else ""
+    if not isinstance(parsed, dict):
+        parsed = {}
+    answer = concise_ask_text(parsed.get("answer"))
     if not answer:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="AI assistant returned an empty answer.",
         )
-    return answer
+    confidence = str(parsed.get("confidence") or "medium").lower()
+    if confidence not in {"high", "medium", "low"}:
+        confidence = "medium"
+    citations: list[PresenterAskCitation] = []
+    seen_citations: set[str] = set()
+    for raw in parsed.get("citations") or []:
+        citation_id = str(raw.get("citation_id") or "") if isinstance(raw, dict) else ""
+        citation = citation_catalog.get(citation_id)
+        if citation and citation_id not in seen_citations:
+            citations.append(citation)
+            seen_citations.add(citation_id)
+        if len(citations) >= 4:
+            break
+    return PresenterAskResponse(
+        answer=answer,
+        confidence=confidence,
+        sections=normalize_ask_sections(parsed.get("sections")),
+        bullets=normalize_string_list(parsed.get("bullets"), limit=16),
+        tables=normalize_ask_tables(parsed.get("tables")),
+        citations=citations,
+        suggested_followups=normalize_string_list(parsed.get("suggested_followups"), limit=4),
+        grounded=True,
+        model=None,
+    )
+
+
+def normalize_string_list(value: Any, *, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for item in value[:limit]:
+        text = " ".join(str(item or "").split())
+        if text:
+            items.append(text)
+    return items
+
+
+def normalize_ask_sections(value: Any) -> list[PresenterAskSection]:
+    if not isinstance(value, list):
+        return []
+    sections: list[PresenterAskSection] = []
+    for item in value[:6]:
+        if not isinstance(item, dict):
+            continue
+        title = " ".join(str(item.get("title") or "").split())
+        body = concise_ask_text(item.get("body"), max_chars=420) or None
+        bullets = normalize_string_list(item.get("bullets"), limit=10)
+        if title or body or bullets:
+            sections.append(
+                PresenterAskSection(
+                    title=title or "Details",
+                    body=body,
+                    bullets=bullets,
+                )
+            )
+    return sections
+
+
+def normalize_ask_tables(value: Any) -> list[PresenterAskTable]:
+    if not isinstance(value, list):
+        return []
+    tables: list[PresenterAskTable] = []
+    for item in value[:3]:
+        if not isinstance(item, dict):
+            continue
+        columns = normalize_string_list(item.get("columns"), limit=6)
+        raw_rows = item.get("rows") or []
+        if not columns or not isinstance(raw_rows, list):
+            continue
+        rows: list[list[str]] = []
+        for raw_row in raw_rows[:12]:
+            if not isinstance(raw_row, list):
+                continue
+            row = [" ".join(str(cell or "").split()) for cell in raw_row[: len(columns)]]
+            rows.append(row + [""] * max(0, len(columns) - len(row)))
+        if rows:
+            tables.append(
+                PresenterAskTable(
+                    title=" ".join(str(item.get("title") or "").split()) or None,
+                    columns=columns,
+                    rows=rows,
+                )
+            )
+    return tables
+
+
+def concise_ask_text(value: Any, *, max_chars: int = 520) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_chars:
+        return text
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    shortened = " ".join(sentence for sentence in sentences[:2] if sentence).strip()
+    if shortened and len(shortened) <= max_chars:
+        return shortened
+    return text[: max_chars - 3].rstrip(" ,;:") + "..."
+
+
+def ask_tokens(text: str | None) -> set[str]:
+    words = re.findall(r"[a-z0-9][a-z0-9+'-]*", (text or "").lower())
+    return {
+        word.strip("'")
+        for word in words
+        if len(word.strip("'")) >= 3 and word.strip("'") not in ASK_STOPWORDS
+    }
+
+
+def classify_presenter_ask_intent(question: str) -> str:
+    lowered = question.lower()
+    if lowered in {"hi", "hii", "hello", "hey", "hey there", "hello there"}:
+        return "casual"
+    if any(phrase in lowered for phrase in ("how many", "number of", "count", "total")):
+        return "count"
+    if any(phrase in lowered for phrase in ASK_LIST_PHRASES):
+        return "list_updates"
+    if any(phrase in lowered for phrase in ASK_CHANGE_PHRASES):
+        return "cycle_change"
+    if any(phrase in lowered for phrase in ASK_LOOKAHEAD_PHRASES):
+        return "lookahead"
+    if any(term in lowered for term in ASK_RISK_TERMS):
+        return "risk_ask"
+    if any(term in lowered for term in ASK_METADATA_TERMS):
+        return "metadata"
+    return "focused_search"
+
+
+def deterministic_presenter_ask_response(
+    *,
+    question: str,
+    intent: str,
+    cycle: str,
+    updates: list[PresenterUpdateResponse],
+    metadata_context: list[dict[str, object]],
+) -> PresenterAskResponse | None:
+    if not updates and not metadata_context:
+        return PresenterAskResponse(
+            answer="I do not see that in the selected approved updates or partner metadata.",
+            confidence="high",
+            grounded=True,
+            model=None,
+        )
+    if intent == "count":
+        partner_count = len({str(update.partner_id) for update in updates if update.partner_id})
+        topic_count = len(
+            [update for update in updates if update.scope == "topic" or not update.partner_id]
+        )
+        parts = [f"{cycle} has {len(updates)} approved update{'s' if len(updates) != 1 else ''}"]
+        if partner_count:
+            parts.append(f"across {partner_count} partner{'s' if partner_count != 1 else ''}")
+        if topic_count:
+            parts.append(f"plus {topic_count} topic-level update{'s' if topic_count != 1 else ''}")
+        return PresenterAskResponse(
+            answer=" ".join(parts) + ".",
+            confidence="high",
+            grounded=True,
+            model=None,
+        )
+    if intent == "list_updates":
+        bullets = [
+            f"{update.partner_name}: {strip_html(update.summary) or update.title}"
+            for update in updates[:20]
+        ]
+        return PresenterAskResponse(
+            answer=(
+                f"I found {len(updates)} approved update{'s' if len(updates) != 1 else ''} "
+                f"for the selected scope."
+            ),
+            confidence="high",
+            bullets=bullets,
+            suggested_followups=[
+                "Summarize these into executive themes.",
+                "Which updates imply risks or asks?",
+            ],
+            grounded=True,
+            model=None,
+        )
+    return None
+
+
+def select_presenter_ask_evidence(
+    *,
+    question: str,
+    intent: str,
+    updates: list[PresenterUpdateResponse],
+    metadata_context: list[dict[str, object]],
+) -> list[PresenterAskEvidence]:
+    evidence = [
+        *presenter_update_evidence(updates),
+        *presenter_metadata_evidence(metadata_context),
+    ]
+    if not evidence:
+        return []
+    ranked: list[PresenterAskEvidence] = []
+    for item in evidence:
+        ranked.append(
+            PresenterAskEvidence(
+                citation_id=item.citation_id,
+                kind=item.kind,
+                partner_id=item.partner_id,
+                partner_name=item.partner_name,
+                title=item.title,
+                text=item.text,
+                cycle=item.cycle,
+                score=score_presenter_ask_evidence(question=question, intent=intent, item=item),
+            )
+        )
+    ranked.sort(
+        key=lambda item: (
+            item.score,
+            item.kind == "approved_update",
+            item.partner_name or "",
+            item.title,
+            item.citation_id,
+        ),
+        reverse=True,
+    )
+    if any(item.score > 0 for item in ranked):
+        ranked = [item for item in ranked if item.score > 0]
+    return dedupe_presenter_ask_evidence(ranked)[:18]
+
+
+def presenter_update_evidence(updates: list[PresenterUpdateResponse]) -> list[PresenterAskEvidence]:
+    items: list[PresenterAskEvidence] = []
+    for update in updates:
+        summary = strip_html(update.summary)
+        text = summary or update.title
+        if not text:
+            continue
+        items.append(
+            PresenterAskEvidence(
+                citation_id=f"approved_update:{update.update_id}",
+                kind="approved_update",
+                partner_id=str(update.partner_id) if update.partner_id else None,
+                partner_name=update.partner_name,
+                title=update.title,
+                text=text[:1200],
+                cycle=update.cycle,
+            )
+        )
+    return items
+
+
+def presenter_metadata_evidence(
+    metadata_context: list[dict[str, object]],
+) -> list[PresenterAskEvidence]:
+    items: list[PresenterAskEvidence] = []
+    for snapshot in metadata_context:
+        partner_id = str(snapshot.get("partner_id") or "") or None
+        partner_name = str(snapshot.get("partner_name") or "") or None
+        cycle = str(snapshot.get("cycle") or "") or None
+        profile_parts = [
+            f"Status: {snapshot.get('status')}" if snapshot.get("status") else "",
+            (
+                f"Why this partner: {snapshot.get('why_this_partner')}"
+                if snapshot.get("why_this_partner")
+                else ""
+            ),
+            (
+                f"Business priority: {snapshot.get('business_priority')}"
+                if snapshot.get("business_priority")
+                else ""
+            ),
+            (
+                f"Highlights/status: {snapshot.get('highlights_status')}"
+                if snapshot.get("highlights_status")
+                else ""
+            ),
+            f"Goals: {snapshot.get('goals')}" if snapshot.get("goals") else "",
+            (
+                f"Execution timeline: {snapshot.get('execution_timeline')}"
+                if snapshot.get("execution_timeline")
+                else ""
+            ),
+        ]
+        profile_text = " ".join(str(part) for part in profile_parts if part).strip()
+        if profile_text:
+            items.append(
+                PresenterAskEvidence(
+                    citation_id=f"metadata_profile:{partner_id or partner_name}:{cycle}",
+                    kind="metadata_profile",
+                    partner_id=partner_id,
+                    partner_name=partner_name,
+                    title="Partner metadata",
+                    text=profile_text[:1400],
+                    cycle=cycle,
+                )
+            )
+        for index, risk in enumerate(snapshot.get("risks") or []):
+            if not isinstance(risk, dict):
+                continue
+            risk_parts = [
+                f"Risk: {risk.get('description')}" if risk.get("description") else "",
+                (
+                    f"Go-to-green action: {risk.get('green_action')}"
+                    if risk.get("green_action")
+                    else ""
+                ),
+                f"Severity: {risk.get('severity')}" if risk.get("severity") else "",
+                f"Owner: {risk.get('assigned_to')}" if risk.get("assigned_to") else "",
+                f"Due date: {risk.get('due_date')}" if risk.get("due_date") else "",
+                f"Ramification: {risk.get('ramification')}" if risk.get("ramification") else "",
+            ]
+            risk_text = " ".join(str(part) for part in risk_parts if part).strip()
+            if risk_text:
+                items.append(
+                    PresenterAskEvidence(
+                        citation_id=f"metadata_risk:{risk.get('metadata_risk_id') or index}",
+                        kind="metadata_risk",
+                        partner_id=partner_id,
+                        partner_name=partner_name,
+                        title="Partner metadata risk",
+                        text=risk_text[:1200],
+                        cycle=cycle,
+                    )
+                )
+        for index, resource in enumerate(snapshot.get("resources") or []):
+            if not isinstance(resource, dict):
+                continue
+            resource_text = " ".join(
+                str(part)
+                for part in [
+                    resource.get("title"),
+                    resource.get("description"),
+                    resource.get("source_kind"),
+                ]
+                if part
+            )
+            if resource_text:
+                items.append(
+                    PresenterAskEvidence(
+                        citation_id=f"metadata_resource:{partner_id or partner_name}:{index}",
+                        kind="metadata_resource",
+                        partner_id=partner_id,
+                        partner_name=partner_name,
+                        title=str(resource.get("title") or "Partner resource"),
+                        text=resource_text[:800],
+                        cycle=cycle,
+                    )
+                )
+    return items
+
+
+def score_presenter_ask_evidence(
+    *,
+    question: str,
+    intent: str,
+    item: PresenterAskEvidence,
+) -> int:
+    question_tokens = ask_tokens(question)
+    haystack = f"{item.partner_name or ''} {item.title} {item.text}"
+    item_tokens = ask_tokens(haystack)
+    score = len(question_tokens & item_tokens) * 3
+    lowered = item.text.lower()
+    kind = item.kind
+    if intent == "cycle_change" and kind == "approved_update":
+        score += 2
+    if intent == "lookahead" and any(term in lowered for term in ASK_LOOKAHEAD_EVIDENCE_TERMS):
+        score += 4
+    if intent == "risk_ask":
+        if kind == "metadata_risk":
+            score += 6
+        if any(term in lowered for term in ASK_RISK_EVIDENCE_TERMS):
+            score += 4
+    if intent == "metadata" and kind.startswith("metadata_"):
+        score += 5
+    if intent == "focused_search" and kind == "approved_update":
+        score += 1
+    return score
+
+
+def dedupe_presenter_ask_evidence(items: list[PresenterAskEvidence]) -> list[PresenterAskEvidence]:
+    seen: set[tuple[str | None, str, str]] = set()
+    deduped: list[PresenterAskEvidence] = []
+    for item in items:
+        key = (item.partner_id or item.partner_name, item.kind, " ".join(item.text.lower().split()))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def stable_model_cache_key(*, model: str, payload: dict[str, object]) -> str:
+    serialized = json.dumps(
+        {"model": model, "payload": payload},
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+async def cached_presenter_ask_model_content(
+    *,
+    runtime: AIClientRuntime,
+    model: str,
+    payload: dict[str, object],
+) -> str:
+    model_payload = {key: value for key, value in payload.items() if not key.startswith("_")}
+    cache_key = stable_model_cache_key(model=model, payload=model_payload)
+    cached = _PRESENTER_ASK_CONTENT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    task = _PRESENTER_ASK_IN_FLIGHT.get(cache_key)
+    if task is None:
+        task = asyncio.create_task(
+            create_presenter_ask_model_content(
+                runtime=runtime,
+                model=model,
+                payload=model_payload,
+            )
+        )
+        _PRESENTER_ASK_IN_FLIGHT[cache_key] = task
+    try:
+        content = await task
+    finally:
+        if task.done() and _PRESENTER_ASK_IN_FLIGHT.get(cache_key) is task:
+            _PRESENTER_ASK_IN_FLIGHT.pop(cache_key, None)
+    _PRESENTER_ASK_CONTENT_CACHE[cache_key] = content
+    while len(_PRESENTER_ASK_CONTENT_CACHE) > PRESENTER_ASK_CACHE_MAX_ITEMS:
+        _PRESENTER_ASK_CONTENT_CACHE.pop(next(iter(_PRESENTER_ASK_CONTENT_CACHE)))
+    return content
+
+
+async def create_presenter_ask_model_content(
+    *,
+    runtime: AIClientRuntime,
+    model: str,
+    payload: dict[str, object],
+) -> str:
+    response = await runtime.client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": presenter_ask_system_prompt()},
+            {
+                "role": "user",
+                "content": json.dumps(payload, sort_keys=True, default=str),
+            },
+        ],
+        response_format={"type": "json_object"},
+        temperature=0,
+        max_tokens=1100,
+    )
+    return response.choices[0].message.content or "{}"
 
 
 def executive_summary_system_prompt() -> str:

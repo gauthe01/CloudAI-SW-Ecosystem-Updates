@@ -1,4 +1,5 @@
 import asyncio
+import json
 import uuid
 from datetime import UTC, date, datetime
 
@@ -21,7 +22,10 @@ from app.domains.presenter import service as presenter_service
 from app.domains.presenter.service import (
     PresenterService,
     build_executive_summary_payload,
+    build_presenter_ask_payload,
+    cached_presenter_ask_model_content,
     parse_decision_board_response,
+    parse_presenter_ask_answer,
 )
 
 
@@ -143,6 +147,146 @@ def test_executive_summary_payload_excludes_source_fields() -> None:
     assert "approved_at" not in approved_update
     assert approved_update["partner_name"] == "Google"
     assert "April 21-23" in approved_update["summary"]
+
+
+def test_presenter_ask_payload_uses_focused_update_and_metadata_evidence() -> None:
+    partner_id = uuid.uuid4()
+    relevant_update = presenter_service.PresenterUpdateResponse(
+        update_id=uuid.uuid4(),
+        partner_id=partner_id,
+        partner_name="Google",
+        scope="partner",
+        topic_label=None,
+        cycle="2026-04",
+        title="Cloud Next planning",
+        summary="Cloud Next is planned for April 21-23 with customer workshops.",
+        source_type=PartnerUpdateSourceType.email,
+        source_label=None,
+        source_url=None,
+        approved_at=None,
+        approved_by=None,
+    )
+    irrelevant_update = presenter_service.PresenterUpdateResponse(
+        update_id=uuid.uuid4(),
+        partner_id=uuid.uuid4(),
+        partner_name="Redis",
+        scope="partner",
+        topic_label=None,
+        cycle="2026-04",
+        title="Benchmark result",
+        summary="Vector search benchmark completed.",
+        source_type=PartnerUpdateSourceType.manual,
+        source_label=None,
+        source_url=None,
+        approved_at=None,
+        approved_by=None,
+    )
+
+    payload = build_presenter_ask_payload(
+        question="What is coming up next month for Google?",
+        cycle="2026-04",
+        date_start=None,
+        date_end=None,
+        scoped_partner_ids=[partner_id],
+        intent="lookahead",
+        updates=[relevant_update, irrelevant_update],
+        metadata_context=[
+            {
+                "partner_id": str(partner_id),
+                "partner_name": "Google",
+                "cycle": "2026-04",
+                "status": "green",
+                "goals": "Prepare Cloud Next workshop.",
+                "execution_timeline": "Customer workshop on April 22.",
+                "risks": [
+                    {
+                        "metadata_risk_id": str(uuid.uuid4()),
+                        "description": "Speaker confirmation pending.",
+                        "green_action": "Confirm speakers by April 10.",
+                    }
+                ],
+                "resources": [],
+            }
+        ],
+        rulebook_body="Do not dump all evidence.",
+        rulebook_trace_version="active:test",
+    )
+
+    evidence = payload["evidence"]
+    assert len(evidence) < 4
+    rendered = json.dumps(evidence)
+    assert "Cloud Next" in rendered
+    assert "Customer workshop" in rendered
+    assert "_citation_catalog" in payload
+
+
+def test_presenter_ask_parser_keeps_only_supplied_citations() -> None:
+    citation = presenter_service.PresenterAskCitation(
+        citation_id="approved_update:1",
+        kind="approved_update",
+        partner_name="Google",
+        title="Cloud Next planning",
+        summary="Cloud Next is planned.",
+        cycle="2026-04",
+    )
+    parsed = parse_presenter_ask_answer(
+        json.dumps(
+            {
+                "answer": "Google is preparing Cloud Next.",
+                "confidence": "high",
+                "bullets": ["Customer workshop is planned."],
+                "citations": [
+                    {"citation_id": "approved_update:1"},
+                    {"citation_id": "approved_update:unknown"},
+                ],
+            }
+        ),
+        citation_catalog={"approved_update:1": citation},
+    )
+
+    assert parsed.answer == "Google is preparing Cloud Next."
+    assert parsed.confidence == "high"
+    assert parsed.bullets == ["Customer workshop is planned."]
+    assert [item.citation_id for item in parsed.citations] == ["approved_update:1"]
+
+
+@pytest.mark.asyncio
+async def test_presenter_ask_model_content_is_cached_for_identical_payloads() -> None:
+    presenter_service._PRESENTER_ASK_CONTENT_CACHE.clear()
+    presenter_service._PRESENTER_ASK_IN_FLIGHT.clear()
+    fake_client = FakeDecisionBoardClient(
+        '{"answer":"Google is preparing Cloud Next.","confidence":"high","citations":[]}'
+    )
+    runtime = FakeDecisionBoardRuntime(fake_client)
+    payload = {
+        "task": "presenter_ask_ai",
+        "question": "What changed this cycle?",
+        "intent": "cycle_change",
+        "scope": {"cycle": "2026-04", "partner_ids": []},
+        "evidence": [{"citation_id": "approved_update:1", "text": "Cloud Next planned."}],
+        "_citation_catalog": {},
+    }
+
+    first, second = await asyncio.gather(
+        cached_presenter_ask_model_content(
+            runtime=runtime,
+            model="reporting-model",
+            payload=payload,
+        ),
+        cached_presenter_ask_model_content(
+            runtime=runtime,
+            model="reporting-model",
+            payload=payload,
+        ),
+    )
+    third = await cached_presenter_ask_model_content(
+        runtime=runtime,
+        model="reporting-model",
+        payload=payload,
+    )
+
+    assert first == second == third
+    assert fake_client.calls == 1
 
 
 @pytest.mark.asyncio

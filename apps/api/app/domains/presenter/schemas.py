@@ -117,10 +117,45 @@ class PresenterAskRequest(BaseModel):
     date_end: date | None = None
 
 
+class PresenterAskSection(BaseModel):
+    title: str
+    body: str | None = None
+    bullets: list[str] = Field(default_factory=list)
+
+
+class PresenterAskTable(BaseModel):
+    title: str | None = None
+    columns: list[str] = Field(default_factory=list)
+    rows: list[list[str]] = Field(default_factory=list)
+
+
+class PresenterAskCitation(BaseModel):
+    citation_id: str
+    kind: str
+    partner_name: str | None = None
+    title: str | None = None
+    summary: str | None = None
+    cycle: str | None = None
+
+
 class PresenterAskResponse(BaseModel):
     answer: str
+    confidence: str = "medium"
+    sections: list[PresenterAskSection] = Field(default_factory=list)
+    bullets: list[str] = Field(default_factory=list)
+    tables: list[PresenterAskTable] = Field(default_factory=list)
+    citations: list[PresenterAskCitation] = Field(default_factory=list)
+    suggested_followups: list[str] = Field(default_factory=list)
     grounded: bool = True
     model: str | None = None
+
+
+class PresenterVoiceTranscriptResponse(BaseModel):
+    text: str
+
+
+class PresenterVoiceSpeechRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
 
 
 class PresenterExecutiveSummaryRequest(BaseModel):

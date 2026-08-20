@@ -914,14 +914,14 @@ function MetadataMonthPicker({
       ref={pickerRef}
     >
       <div className="cycle-picker-control">
-        <button
+        <input
           className="metadata-month-display"
-          type="button"
-          onClick={handleToggle}
-          aria-expanded={open}
-        >
-          {value ? formatMonthLabel(value) : placeholder}
-        </button>
+          type="text"
+          value={value ? formatMonthLabel(value) : ""}
+          placeholder={placeholder}
+          onChange={(event) => onChange(event.currentTarget.value)}
+          aria-label={placeholder}
+        />
         <button
           className="cycle-picker-label"
           type="button"

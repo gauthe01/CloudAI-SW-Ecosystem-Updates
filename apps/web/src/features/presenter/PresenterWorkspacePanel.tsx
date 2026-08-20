@@ -14,6 +14,7 @@ import {
 import { GlobalLoader } from "@/components/foundation/GlobalLoader";
 import {
   DraftEmail,
+  PresenterAskAnswer,
   PresenterDecisionBoard,
   PresenterDecisionBoardSignal,
   PresenterExecutiveSummary,
@@ -27,6 +28,8 @@ import {
   generatePresenterExecutiveSummary,
   getPresenterMetadata,
   listPresenterUpdates,
+  synthesizePresenterAiVoice,
+  transcribePresenterAiVoice,
 } from "@/features/presenter/presenter-api";
 
 type PresenterWorkspacePanelProps = {
@@ -39,6 +42,15 @@ type PresenterWorkspacePanelProps = {
   period: PresenterPeriodQuery;
   section: string;
   selectedPartnerIds: string[];
+};
+
+type PresenterAiMessage = {
+  id: number;
+  kind: "user" | "assistant";
+  text: string;
+  answer?: PresenterAskAnswer;
+  error?: boolean;
+  pending?: boolean;
 };
 
 export function PresenterWorkspacePanel({
@@ -1212,9 +1224,18 @@ function AskAiPanel({
   const [scopeSearch, setScopeSearch] = useState("");
   const [panelWidth, setPanelWidth] = useState(540);
   const [busy, setBusy] = useState(false);
-  const [messages, setMessages] = useState<
-    Array<{ id: number; kind: "user" | "assistant"; text: string; error?: boolean; pending?: boolean }>
-  >([]);
+  const [messages, setMessages] = useState<PresenterAiMessage[]>([]);
+  const [voiceStatus, setVoiceStatus] = useState("");
+  const [recording, setRecording] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const [lastVoiceReply, setLastVoiceReply] = useState("");
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const recordingStartedAtRef = useRef(0);
+  const recordingStopTimerRef = useRef<number | null>(null);
+  const replyAudioRef = useRef<HTMLAudioElement | null>(null);
+  const replyAudioUrlRef = useRef<string | null>(null);
   const scopeLabel = selectedPartner
     ? selectedPartner.name
     : selectedPartnerIds.length
@@ -1224,7 +1245,14 @@ function AskAiPanel({
     partner.name.toLowerCase().includes(scopeSearch.trim().toLowerCase()),
   );
 
-  async function submitQuestion(value: string) {
+  useEffect(() => {
+    return () => {
+      stopVoiceRecording();
+      stopReplyAudio();
+    };
+  }, []);
+
+  async function submitQuestion(value: string, options: { speak?: boolean } = {}) {
     const cleaned = value.trim();
     if (!cleaned || busy) {
       return;
@@ -1249,10 +1277,13 @@ function AskAiPanel({
       setMessages((current) =>
         current.map((message) =>
           message.id === assistantId
-            ? { id: assistantId, kind: "assistant", text: answer.answer }
+            ? { id: assistantId, kind: "assistant", text: answer.answer, answer }
             : message,
         ),
       );
+      if (options.speak) {
+        await speakAssistantAnswer(answer.answer);
+      }
     } catch (error) {
       setMessages((current) =>
         current.map((message) =>
@@ -1268,6 +1299,128 @@ function AskAiPanel({
       );
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function speakAssistantAnswer(text: string) {
+    const cleaned = text.trim();
+    if (!cleaned) {
+      return;
+    }
+    try {
+      setVoiceStatus("Generating voice reply...");
+      stopReplyAudio();
+      const blob = await synthesizePresenterAiVoice(cleaned);
+      const audioUrl = URL.createObjectURL(blob);
+      const audio = new Audio(audioUrl);
+      replyAudioUrlRef.current = audioUrl;
+      replyAudioRef.current = audio;
+      audio.addEventListener("ended", () => {
+        setVoiceStatus("");
+        stopReplyAudio();
+      });
+      setVoiceStatus("Speaking...");
+      setLastVoiceReply(cleaned);
+      setSpeaking(true);
+      await audio.play();
+    } catch {
+      setSpeaking(false);
+      setVoiceStatus("Voice reply is unavailable.");
+    }
+  }
+
+  function stopReplyAudio() {
+    if (replyAudioRef.current) {
+      replyAudioRef.current.pause();
+      replyAudioRef.current.currentTime = 0;
+      replyAudioRef.current = null;
+    }
+    if (replyAudioUrlRef.current) {
+      URL.revokeObjectURL(replyAudioUrlRef.current);
+      replyAudioUrlRef.current = null;
+    }
+    setSpeaking(false);
+  }
+
+  async function handleVoiceClick() {
+    if (recording) {
+      stopVoiceRecording();
+      return;
+    }
+    if (busy) {
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setVoiceStatus("Voice input is not supported in this browser.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const options =
+        MediaRecorder.isTypeSupported?.("audio/webm")
+          ? { mimeType: "audio/webm" }
+          : undefined;
+      const recorder = new MediaRecorder(stream, options);
+      audioStreamRef.current = stream;
+      recorderRef.current = recorder;
+      audioChunksRef.current = [];
+      recordingStartedAtRef.current = Date.now();
+      recorder.addEventListener("dataavailable", (event) => {
+        if (event.data.size) {
+          audioChunksRef.current.push(event.data);
+        }
+      });
+      recorder.addEventListener("stop", () => {
+        void handleVoiceRecordingStopped();
+      });
+      recorder.start();
+      setRecording(true);
+      setVoiceStatus("Listening... click the mic again to stop.");
+      recordingStopTimerRef.current = window.setTimeout(stopVoiceRecording, 60000);
+    } catch {
+      setVoiceStatus("Microphone access is blocked.");
+    }
+  }
+
+  function stopVoiceRecording() {
+    if (recordingStopTimerRef.current) {
+      window.clearTimeout(recordingStopTimerRef.current);
+      recordingStopTimerRef.current = null;
+    }
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+      return;
+    }
+    stopVoiceStream();
+    setRecording(false);
+  }
+
+  function stopVoiceStream() {
+    audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    audioStreamRef.current = null;
+    recorderRef.current = null;
+  }
+
+  async function handleVoiceRecordingStopped() {
+    const durationMs = Date.now() - recordingStartedAtRef.current;
+    const mimeType = recorderRef.current?.mimeType || "audio/webm";
+    const blob = new Blob(audioChunksRef.current, { type: mimeType });
+    stopVoiceStream();
+    setRecording(false);
+    if (!blob.size) {
+      setVoiceStatus("I could not hear anything. Try again or type your question.");
+      return;
+    }
+    try {
+      setVoiceStatus("Transcribing...");
+      const transcript = await transcribePresenterAiVoice({ audio: blob, durationMs });
+      setQuestion(transcript);
+      setVoiceStatus("Transcript ready. Asking assistant...");
+      await submitQuestion(transcript, { speak: true });
+      setVoiceStatus("");
+    } catch {
+      setVoiceStatus("Could not transcribe audio. Try again or type your question.");
     }
   }
 
@@ -1319,7 +1472,7 @@ function AskAiPanel({
       </div>
       <div className="presenter-ai-config">
         <span>Grounded mode</span>
-        <strong>Approved updates only</strong>
+        <strong>Approved updates + metadata</strong>
       </div>
       <div className="presenter-ai-scope">
         <div className="presenter-ai-scope-main">
@@ -1429,7 +1582,14 @@ function AskAiPanel({
                       : "presenter-ai-answer-text"
                 }
               >
-                {renderAskAiText(message.text)}
+                {message.answer && !message.pending && !message.error ? (
+                  <PresenterAiAnswer
+                    answer={message.answer}
+                    onFollowup={(nextQuestion) => void submitQuestion(nextQuestion)}
+                  />
+                ) : (
+                  renderAskAiText(message.text)
+                )}
               </div>
             </div>
             {message.kind === "user" ? <span className="presenter-ai-user-avatar">You</span> : null}
@@ -1445,10 +1605,108 @@ function AskAiPanel({
           autoComplete="off"
           disabled={busy}
         />
-        <button className="presenter-ai-voice-button" type="button" aria-label="Ask with voice" title="Ask with voice" />
+        <button
+          className={recording ? "presenter-ai-voice-button recording" : "presenter-ai-voice-button"}
+          type="button"
+          aria-label={recording ? "Stop voice recording" : "Ask with voice"}
+          title={recording ? "Stop recording" : "Ask with voice"}
+          disabled={busy && !recording}
+          onClick={() => void handleVoiceClick()}
+        >
+          {recording ? (
+            <span className="presenter-ai-voice-stop" aria-hidden="true" />
+          ) : (
+            <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+              <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z" />
+              <path d="M19 11a7 7 0 0 1-14 0" />
+              <path d="M12 18v3" />
+              <path d="M8 21h8" />
+            </svg>
+          )}
+        </button>
         <button className="presenter-ai-send" type="submit" aria-label="Send AI question" title="Send" disabled={busy} />
+        {voiceStatus || lastVoiceReply ? (
+          <div className="presenter-ai-voice-status">
+            {voiceStatus ? <span>{voiceStatus}</span> : null}
+            {speaking ? (
+              <button type="button" onClick={stopReplyAudio}>
+                Stop
+              </button>
+            ) : lastVoiceReply ? (
+              <button type="button" onClick={() => void speakAssistantAnswer(lastVoiceReply)}>
+                Replay
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </form>
     </aside>
+  );
+}
+
+function PresenterAiAnswer({
+  answer,
+  onFollowup,
+}: {
+  answer: PresenterAskAnswer;
+  onFollowup: (question: string) => void;
+}) {
+  return (
+    <div className="presenter-ai-structured-answer">
+      <p>{answer.answer}</p>
+      {answer.bullets.length ? (
+        <ul className="presenter-ai-list">
+          {answer.bullets.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      ) : null}
+      {answer.sections.map((section) => (
+        <section className="presenter-ai-section" key={`${section.title}-${section.body ?? ""}`}>
+          <h4>{section.title}</h4>
+          {section.body ? <p>{section.body}</p> : null}
+          {section.bullets.length ? (
+            <ul className="presenter-ai-list">
+              {section.bullets.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      ))}
+      {answer.tables.map((table) => (
+        <div className="presenter-ai-table-wrap" key={`${table.title ?? "table"}-${table.columns.join("-")}`}>
+          {table.title ? <h4>{table.title}</h4> : null}
+          <table className="presenter-ai-table">
+            <thead>
+              <tr>
+                {table.columns.map((column) => (
+                  <th key={column}>{column}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {table.rows.map((row, rowIndex) => (
+                <tr key={`${row.join("-")}-${rowIndex}`}>
+                  {table.columns.map((column, columnIndex) => (
+                    <td key={`${column}-${columnIndex}`}>{row[columnIndex] ?? ""}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+      {answer.suggested_followups.length ? (
+        <div className="presenter-ai-followups" aria-label="Suggested follow-up questions">
+          {answer.suggested_followups.map((question) => (
+            <button type="button" key={question} onClick={() => onFollowup(question)}>
+              {question}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
