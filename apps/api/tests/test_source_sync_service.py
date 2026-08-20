@@ -62,7 +62,31 @@ async def test_slack_source_sync_enqueues_new_messages_and_records_cursor(monkey
             ),
         )
 
-        async def fake_history(self, *, bot_token: str, channel_id: str, oldest: str):
+        history_calls: list[tuple[str | None, str | None]] = []
+
+        async def fake_history(
+            self,
+            *,
+            bot_token: str,
+            channel_id: str,
+            oldest: str | None,
+            latest: str | None = None,
+            cursor: str | None = None,
+        ):
+            history_calls.append((oldest, cursor))
+            if cursor == "older-page":
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "type": "message",
+                            "user": "U222",
+                            "text": "The August enablement checkpoint moved one week earlier.",
+                            "ts": "1785456000.000100",
+                        }
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
             return {
                 "ok": True,
                 "messages": [
@@ -74,17 +98,12 @@ async def test_slack_source_sync_enqueues_new_messages_and_records_cursor(monkey
                     },
                     {
                         "type": "message",
-                        "user": "U222",
-                        "text": "The August enablement checkpoint moved one week earlier.",
-                        "ts": "1785456000.000100",
-                    },
-                    {
-                        "type": "message",
                         "subtype": "channel_join",
                         "text": "Someone joined.",
                         "ts": "1785455000.000100",
                     },
                 ],
+                "response_metadata": {"next_cursor": "older-page"},
             }
 
         monkeypatch.setattr(SlackSourceSyncConnector, "_get_history", fake_history)
@@ -95,6 +114,7 @@ async def test_slack_source_sync_enqueues_new_messages_and_records_cursor(monkey
         assert result.fetched == 2
         assert result.queued == 2
         assert result.ignored == 1
+        assert history_calls == [(None, None), (None, "older-page")]
 
         events = list(
             (
@@ -118,7 +138,110 @@ async def test_slack_source_sync_enqueues_new_messages_and_records_cursor(monkey
         assert "source_item" in payloads[0].raw_payload_json
         assert state is not None
         assert state.cursor_value == "1785542400.000200"
+        assert state.backfill_completed_at is not None
         assert run.status == SourceSyncRunStatus.succeeded.value
+
+        history_calls.clear()
+
+        async def fake_incremental_history(
+            self,
+            *,
+            bot_token: str,
+            channel_id: str,
+            oldest: str | None,
+            latest: str | None = None,
+            cursor: str | None = None,
+        ):
+            history_calls.append((oldest, cursor))
+            return {"ok": True, "messages": [], "response_metadata": {"next_cursor": ""}}
+
+        monkeypatch.setattr(SlackSourceSyncConnector, "_get_history", fake_incremental_history)
+        second_result = await SourceSyncService(session, get_settings()).sync_source(
+            source.connected_source_id
+        )
+
+        assert second_result.fetched == 0
+        assert second_result.queued == 0
+        assert history_calls == [("1785542400.000200", None)]
+
+        await cleanup_test_records(session, [partner_name], [admin_email, contributor_email])
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_existing_slack_source_backfills_before_existing_cursor(monkeypatch) -> None:
+    admin_email = f"sync-slack-backfill-admin-{uuid.uuid4()}@example.com"
+    contributor_email = f"sync-slack-backfill-contributor-{uuid.uuid4()}@example.com"
+    partner_name = f"Sync Slack Backfill Partner {uuid.uuid4()}"
+    channel_id = f"C{uuid.uuid4().hex[:10].upper()}"
+    existing_cursor = "1785542400.000200"
+
+    async with get_session_factory()() as session:
+        await cleanup_test_records(session, [partner_name], [admin_email, contributor_email])
+        await configure_integration(
+            session,
+            admin_email=admin_email,
+            integration_type=IntegrationType.slack,
+            secrets={"signing_secret": "secret", "bot_token": "xoxb-test-token"},
+        )
+        source = await create_active_source(
+            session,
+            partner_name=partner_name,
+            contributor_email=contributor_email,
+            payload=ConnectedSourceRequest(
+                source_type="slack_channel",
+                channel_name="#existing-source",
+                channel_id=channel_id,
+                bot_invited_confirmed=True,
+            ),
+        )
+        session.add(
+            SourceSyncState(
+                connected_source_id=source.connected_source_id,
+                cursor_value=existing_cursor,
+                cursor_timestamp=datetime.fromtimestamp(float(existing_cursor), UTC),
+            )
+        )
+        await session.commit()
+
+        history_calls: list[tuple[str | None, str | None, str | None]] = []
+
+        async def fake_history(
+            self,
+            *,
+            bot_token: str,
+            channel_id: str,
+            oldest: str | None,
+            latest: str | None = None,
+            cursor: str | None = None,
+        ):
+            history_calls.append((oldest, latest, cursor))
+            return {
+                "ok": True,
+                "messages": [
+                    {
+                        "type": "message",
+                        "user": "U222",
+                        "text": "Historic partner message before existing cursor.",
+                        "ts": "1785456000.000100",
+                    }
+                ],
+                "response_metadata": {"next_cursor": ""},
+            }
+
+        monkeypatch.setattr(SlackSourceSyncConnector, "_get_history", fake_history)
+        result = await SourceSyncService(session, get_settings()).sync_source(
+            source.connected_source_id
+        )
+
+        state = await session.get(SourceSyncState, source.connected_source_id)
+
+        assert result.fetched == 1
+        assert result.queued == 1
+        assert history_calls == [(None, existing_cursor, None)]
+        assert state is not None
+        assert state.cursor_value == existing_cursor
+        assert state.backfill_completed_at is not None
 
         await cleanup_test_records(session, [partner_name], [admin_email, contributor_email])
         await session.commit()

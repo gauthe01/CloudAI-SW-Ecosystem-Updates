@@ -28,6 +28,10 @@ ACCESS_TEST_PASSED_SUMMARY = (
     "Access readiness passed. Live external API validation requires provider webhook delivery "
     "through AWS HTTPS or a local tunnel."
 )
+SLACK_ACCESS_TEST_PASSED_SUMMARY = (
+    "Access readiness passed. Slack updates will be collected through source-sync polling; "
+    "Slack Event Subscriptions are not required."
+)
 
 
 class AdminConnectedSourceApprovalService:
@@ -71,7 +75,7 @@ class AdminConnectedSourceApprovalService:
             return await self._to_response(source)
 
         source.last_tested_at = now
-        source.last_error_summary = ACCESS_TEST_PASSED_SUMMARY
+        source.last_error_summary = access_test_passed_summary(source.source_type)
         if source.status in {
             ConnectedSourceStatus.needs_access_setup.value,
             ConnectedSourceStatus.failed.value,
@@ -99,7 +103,10 @@ class AdminConnectedSourceApprovalService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Enable the global integration before approving this source.",
             )
-        if source.last_tested_at is None or source.last_error_summary != ACCESS_TEST_PASSED_SUMMARY:
+        if (
+            source.last_tested_at is None
+            or source.last_error_summary != access_test_passed_summary(source.source_type)
+        ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Run a successful access test before approving this source.",
@@ -400,6 +407,12 @@ def display_name_for_integration(integration_type: IntegrationType) -> str:
         IntegrationType.confluence: "Confluence",
         IntegrationType.github: "GitHub",
     }[integration_type]
+
+
+def access_test_passed_summary(source_type: str | ConnectedSourceType) -> str:
+    if ConnectedSourceType(source_type) == ConnectedSourceType.slack_channel:
+        return SLACK_ACCESS_TEST_PASSED_SUMMARY
+    return ACCESS_TEST_PASSED_SUMMARY
 
 
 def resource_link_description(source_type: ConnectedSourceType) -> str:

@@ -22,14 +22,14 @@ def settings_with(**overrides: object) -> Settings:
     return settings.model_copy(update=overrides)
 
 
-def test_model_request_uses_reference_payload_and_output_contract() -> None:
+def test_model_request_includes_structured_payload_and_output_contract() -> None:
     source_event = make_source_event(
         source_type="jira_issue",
         technical_metadata={"issue_key": "AWS-123", "changed_fields": ["status"]},
     )
     source_payload = SourcePayload(
         source_event_id=source_event.source_event_id,
-        raw_payload_json={"secret": "raw payload should not be copied"},
+        raw_payload_json={"source_item": {"text": "Partner milestone moved to September."}},
         raw_text_encrypted="encrypted text reference only",
         retention_policy="structured_payload",
     )
@@ -62,7 +62,10 @@ def test_model_request_uses_reference_payload_and_output_contract() -> None:
     )
     assert request["input"]["payload"]["payload_available"] is True
     assert request["input"]["payload"]["has_structured_payload"] is True
-    assert "raw payload should not be copied" not in str(request)
+    assert request["input"]["payload"]["structured_payload"] == {
+        "source_item": {"text": "Partner milestone moved to September."}
+    }
+    assert "encrypted text reference only" not in str(request)
 
 
 @pytest.mark.asyncio

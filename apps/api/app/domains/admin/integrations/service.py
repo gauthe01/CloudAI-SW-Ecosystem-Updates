@@ -45,11 +45,15 @@ INTEGRATION_DEFINITIONS: tuple[IntegrationDefinition, ...] = (
     IntegrationDefinition(
         integration_type=IntegrationType.slack,
         display_name="Slack",
-        description="Workspace-level Slack app credentials for event ingestion.",
-        webhook_path="/api/webhooks/slack/events",
+        description="Workspace-level Slack bot token for polling approved channels.",
+        webhook_path=None,
         fields=(
-            IntegrationFieldDefinition("signing_secret", "Signing Secret"),
             IntegrationFieldDefinition("bot_token", "Bot Token"),
+            IntegrationFieldDefinition(
+                "signing_secret",
+                "Signing Secret (legacy webhook only)",
+                required=False,
+            ),
         ),
     ),
     IntegrationDefinition(
@@ -203,10 +207,7 @@ class AdminIntegrationService:
             integration.status = IntegrationStatus.not_configured.value
             integration.last_error_summary = result_summary
         else:
-            result_summary = (
-                "Local readiness check passed. Live external API validation is pending IT "
-                "credentials and webhook access."
-            )
+            result_summary = readiness_success_summary(definition)
             test_status = IntegrationTestStatus.succeeded
             integration.status = IntegrationStatus.enabled.value
             integration.enabled_at = now
@@ -402,3 +403,15 @@ def definition_for_type(integration_type: IntegrationType) -> IntegrationDefinit
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Integration type is not supported.",
         ) from exc
+
+
+def readiness_success_summary(definition: IntegrationDefinition) -> str:
+    if definition.integration_type == IntegrationType.slack:
+        return (
+            "Local readiness check passed. Slack updates are collected through "
+            "source-sync polling; Slack Event Subscriptions are not required."
+        )
+    return (
+        "Local readiness check passed. Live external API validation is pending IT "
+        "credentials and webhook access."
+    )

@@ -26,14 +26,14 @@ def test_source_event_rulebook_resolver_rejects_unknown_source_type() -> None:
         source_event_rulebook_name("unknown_source")
 
 
-def test_source_event_extraction_input_keeps_payload_as_reference_only() -> None:
+def test_source_event_extraction_input_includes_structured_payload() -> None:
     source_event = make_source_event(
         source_type="jira_issue",
         technical_metadata={"issue_key": "AWS-123", "changed_fields": ["status"]},
     )
     source_payload = SourcePayload(
         source_event_id=source_event.source_event_id,
-        raw_payload_json={"secret": "raw payload should not be copied to model payload"},
+        raw_payload_json={"source_item": {"text": "Partner milestone moved to September."}},
         raw_text_encrypted="encrypted text reference only",
         retention_policy="structured_payload",
     )
@@ -47,8 +47,11 @@ def test_source_event_extraction_input_keeps_payload_as_reference_only() -> None
     }
     assert model_payload["payload"]["payload_available"] is True
     assert model_payload["payload"]["has_structured_payload"] is True
+    assert model_payload["payload"]["structured_payload"] == {
+        "source_item": {"text": "Partner milestone moved to September."}
+    }
     assert model_payload["payload"]["has_encrypted_text"] is True
-    assert "raw payload should not be copied" not in str(model_payload)
+    assert "encrypted text reference only" not in str(model_payload)
     assert len(extraction_input.input_fingerprint) == 64
 
 

@@ -40,6 +40,7 @@ class ConnectorSyncResult:
     cursor_timestamp: datetime | None
     ignored_count: int = 0
     skipped_reason: str | None = None
+    backfill_completed: bool = False
 
 
 class SourceSyncConnector(Protocol):
@@ -87,37 +88,47 @@ class SlackSourceSyncConnector:
     ) -> ConnectorSyncResult:
         detail = await self._load_detail(source)
         bot_token = await self._bot_token()
-        oldest = slack_oldest_cursor(
-            state=state,
-            initial_lookback_days=self.settings.source_sync_initial_lookback_days,
-        )
-        response = await self._get_history(
+        backfill_required = state.backfill_completed_at is None
+        oldest = slack_oldest_cursor(state=state)
+        latest = oldest if backfill_required and oldest else None
+        fetch_oldest = None if backfill_required else oldest
+        responses = await self._get_history_pages(
             bot_token=bot_token,
             channel_id=detail.channel_id,
-            oldest=oldest,
+            oldest=fetch_oldest,
+            latest=latest,
         )
-        messages = [
-            message for message in response.get("messages", [])
-            if should_enqueue_slack_message(message)
+        raw_messages = [
+            message
+            for response in responses
+            for message in response.get("messages", [])
         ]
+        messages = [message for message in raw_messages if should_enqueue_slack_message(message)]
         items = [
             slack_message_to_sync_item(
                 source=source,
                 detail=detail,
                 message=message,
             )
-            for message in reversed(messages)
+            for message in sorted(messages, key=slack_message_ts)
         ]
         latest_ts = latest_slack_ts(messages)
+        latest_raw_ts = latest_slack_ts(raw_messages)
+        cursor_value = latest_ts or latest_raw_ts or state.cursor_value
+        if backfill_required and latest:
+            cursor_value = state.cursor_value
+        if backfill_required and cursor_value is None:
+            cursor_value = str(datetime.now(UTC).timestamp())
         return ConnectorSyncResult(
             items=items,
-            cursor_value=latest_ts or state.cursor_value,
+            cursor_value=cursor_value,
             cursor_timestamp=(
-                slack_timestamp_to_datetime(latest_ts)
-                if latest_ts
+                slack_timestamp_to_datetime(cursor_value)
+                if cursor_value
                 else state.cursor_timestamp
             ),
-            ignored_count=max(0, len(response.get("messages", [])) - len(messages)),
+            ignored_count=max(0, len(raw_messages) - len(messages)),
+            backfill_completed=backfill_required,
         )
 
     async def _load_detail(self, source: ConnectedSource) -> ConnectedSourceSlackChannel:
@@ -142,25 +153,61 @@ class SlackSourceSyncConnector:
             raise RuntimeError("Slack bot token is not configured.")
         return token
 
+    async def _get_history_pages(
+        self,
+        *,
+        bot_token: str,
+        channel_id: str,
+        oldest: str | None,
+        latest: str | None,
+    ) -> list[dict[str, Any]]:
+        pages: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            payload = await self._get_history(
+                bot_token=bot_token,
+                channel_id=channel_id,
+                oldest=oldest,
+                latest=latest,
+                cursor=cursor,
+            )
+            pages.append(payload)
+            next_cursor = (
+                payload.get("response_metadata", {}).get("next_cursor")
+                if isinstance(payload.get("response_metadata"), dict)
+                else None
+            )
+            if not next_cursor:
+                return pages
+            cursor = str(next_cursor)
+
     async def _get_history(
         self,
         *,
         bot_token: str,
         channel_id: str,
-        oldest: str,
+        oldest: str | None,
+        latest: str | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
+        params: dict[str, str | int] = {
+            "channel": channel_id,
+            "limit": 200,
+            "inclusive": "false",
+        }
+        if oldest:
+            params["oldest"] = oldest
+        if latest:
+            params["latest"] = latest
+        if cursor:
+            params["cursor"] = cursor
         async with httpx.AsyncClient(
             timeout=self.settings.source_sync_http_timeout_seconds
         ) as client:
             response = await client.get(
                 "https://slack.com/api/conversations.history",
                 headers={"Authorization": f"Bearer {bot_token}"},
-                params={
-                    "channel": channel_id,
-                    "oldest": oldest,
-                    "limit": 100,
-                    "inclusive": "false",
-                },
+                params=params,
             )
         response.raise_for_status()
         payload = response.json()
@@ -278,12 +325,12 @@ def to_ingest_request(item: SyncItem, connected_source_id) -> SourceEventIngestR
     )
 
 
-def slack_oldest_cursor(*, state: SourceSyncState, initial_lookback_days: int) -> str:
+def slack_oldest_cursor(*, state: SourceSyncState) -> str | None:
     if state.cursor_value:
         return state.cursor_value
     if state.cursor_timestamp:
         return str(state.cursor_timestamp.timestamp())
-    return str((datetime.now(UTC) - timedelta(days=initial_lookback_days)).timestamp())
+    return None
 
 
 def should_enqueue_slack_message(message: dict[str, Any]) -> bool:
@@ -295,6 +342,10 @@ def should_enqueue_slack_message(message: dict[str, Any]) -> bool:
 def latest_slack_ts(messages: list[dict[str, Any]]) -> str | None:
     values = [str(message.get("ts") or "") for message in messages if message.get("ts")]
     return max(values, key=float) if values else None
+
+
+def slack_message_ts(message: dict[str, Any]) -> float:
+    return float(str(message.get("ts") or "0"))
 
 
 def slack_timestamp_to_datetime(value: str | None) -> datetime | None:

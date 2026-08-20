@@ -84,6 +84,40 @@ async def test_admin_can_save_credentials_without_returning_or_storing_raw_value
 
 
 @pytest.mark.asyncio
+async def test_slack_integration_uses_polling_without_required_webhook_secret() -> None:
+    admin_email = f"integration-slack-polling-admin-{uuid.uuid4()}@example.com"
+
+    async with get_session_factory()() as session:
+        await cleanup_integrations(session)
+        admin = await create_admin(session, admin_email)
+        service = AdminIntegrationService(session, get_settings())
+        current_admin = user_to_response(admin)
+
+        response = await service.update_credentials(
+            integration_type=IntegrationType.slack,
+            payload=IntegrationCredentialUpdateRequest(secrets={"bot_token": "xoxb-raw-token"}),
+            current_admin=current_admin,
+        )
+        assert response.webhook_url is None
+        assert response.required_field_count == 1
+        assert response.required_configured_count == 1
+
+        enabled = await service.test_integration(
+            integration_type=IntegrationType.slack,
+            current_admin=current_admin,
+        )
+
+        assert enabled.status == IntegrationStatus.enabled
+        assert enabled.last_test_status == IntegrationTestStatus.succeeded
+        assert "source-sync polling" in (enabled.last_error_summary or "")
+        assert "Event Subscriptions are not required" in (enabled.last_error_summary or "")
+
+        await cleanup_integrations(session)
+        await cleanup_test_users(session, [admin_email])
+        await session.commit()
+
+
+@pytest.mark.asyncio
 async def test_readiness_test_fails_until_required_credentials_are_configured() -> None:
     admin_email = f"integration-test-admin-{uuid.uuid4()}@example.com"
 

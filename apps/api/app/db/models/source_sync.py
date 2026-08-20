@@ -34,6 +34,10 @@ class SourceSyncState(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    backfill_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     next_sync_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

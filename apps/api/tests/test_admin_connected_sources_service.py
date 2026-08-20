@@ -117,6 +117,51 @@ async def test_admin_approves_source_only_after_enabled_integration_and_access_t
 
 
 @pytest.mark.asyncio
+async def test_slack_source_access_test_uses_polling_readiness_summary() -> None:
+    admin_email = f"approval-slack-admin-{uuid.uuid4()}@example.com"
+    contributor_email = f"approval-slack-contributor-{uuid.uuid4()}@example.com"
+    partner_name = f"Approval Slack Partner {uuid.uuid4()}"
+
+    async with get_session_factory()() as session:
+        await cleanup_test_records(session, [partner_name], [admin_email, contributor_email])
+        admin, contributor, partner = await create_approval_fixture(
+            session,
+            admin_email=admin_email,
+            contributor_email=contributor_email,
+            partner_name=partner_name,
+        )
+        contributor_service = ContributorConnectedSourceService(session)
+        slack_source = await contributor_service.create_source(
+            partner_id=partner.partner_id,
+            payload=ConnectedSourceRequest(
+                source_type="slack_channel",
+                channel_name="#polling-only",
+                channel_id="CPOLLING01",
+                bot_invited_confirmed=True,
+            ),
+            current_user=user_to_response(contributor),
+        )
+        approval_service = AdminConnectedSourceApprovalService(session)
+
+        await enable_integration(session, IntegrationType.slack)
+        retested = await approval_service.test_access(slack_source.connected_source_id)
+
+        assert retested.status == ConnectedSourceStatus.pending
+        assert "source-sync polling" in (retested.access_test_summary or "")
+        assert "Event Subscriptions are not required" in (retested.access_test_summary or "")
+
+        approved = await approval_service.approve_source(
+            connected_source_id=slack_source.connected_source_id,
+            current_admin=user_to_response(admin),
+        )
+
+        assert approved.status == ConnectedSourceStatus.active
+
+        await cleanup_test_records(session, [partner_name], [admin_email, contributor_email])
+        await session.commit()
+
+
+@pytest.mark.asyncio
 async def test_admin_can_reject_needs_access_and_disable_sources() -> None:
     admin_email = f"approval-state-admin-{uuid.uuid4()}@example.com"
     contributor_email = f"approval-state-contributor-{uuid.uuid4()}@example.com"

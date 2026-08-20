@@ -35,6 +35,7 @@ class SourcePayloadReference:
     payload_available: bool
     retention_policy: str | None
     has_structured_payload: bool
+    structured_payload: dict[str, Any] | None
     has_encrypted_text: bool
     storage_object_id: uuid.UUID | None
 
@@ -68,6 +69,7 @@ class SourceEventExtractionInput:
                 "payload_available": self.payload.payload_available,
                 "retention_policy": self.payload.retention_policy,
                 "has_structured_payload": self.payload.has_structured_payload,
+                "structured_payload": self.payload.structured_payload,
                 "has_encrypted_text": self.payload.has_encrypted_text,
                 "storage_object_id": (
                     str(self.payload.storage_object_id)
@@ -254,6 +256,11 @@ def build_source_event_extraction_input(
         payload_available=source_payload is not None,
         retention_policy=source_payload.retention_policy if source_payload else None,
         has_structured_payload=bool(source_payload and source_payload.raw_payload_json),
+        structured_payload=(
+            source_payload.raw_payload_json
+            if source_payload is not None and source_payload.raw_payload_json
+            else None
+        ),
         has_encrypted_text=bool(source_payload and source_payload.raw_text_encrypted),
         storage_object_id=source_payload.storage_object_id if source_payload else None,
     )

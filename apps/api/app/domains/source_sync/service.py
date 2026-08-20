@@ -157,6 +157,8 @@ class SourceSyncService:
         state.cursor_timestamp = connector_result.cursor_timestamp
         state.last_synced_at = now
         state.last_successful_sync_at = now
+        if connector_result.backfill_completed:
+            state.backfill_completed_at = now
         state.next_sync_at = now + timedelta(seconds=self.settings.source_sync_interval_seconds)
         state.last_error_summary = None
         state.consecutive_failures = 0
