@@ -280,6 +280,7 @@ async def test_jira_source_sync_enqueues_comments_and_changelog_after_cursor(mon
                 connected_source_id=source.connected_source_id,
                 cursor_value="2026-06-01T00:00:00+00:00",
                 cursor_timestamp=datetime(2026, 6, 1, tzinfo=UTC),
+                backfill_completed_at=datetime(2026, 6, 1, tzinfo=UTC),
             )
         )
         await session.commit()
@@ -345,6 +346,188 @@ async def test_jira_source_sync_enqueues_comments_and_changelog_after_cursor(mon
             f"{issue_key}:changelog:201",
         ]
         assert all(event.source_event_timestamp.month == 7 for event in events)
+
+        await cleanup_test_records(session, [partner_name], [admin_email, contributor_email])
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_jira_source_sync_backfills_full_issue_history_and_records_cursor(
+    monkeypatch,
+) -> None:
+    admin_email = f"sync-jira-backfill-admin-{uuid.uuid4()}@example.com"
+    contributor_email = f"sync-jira-backfill-contributor-{uuid.uuid4()}@example.com"
+    partner_name = f"Sync Jira Backfill Partner {uuid.uuid4()}"
+    issue_key = "STESOL-777"
+
+    async with get_session_factory()() as session:
+        await cleanup_test_records(session, [partner_name], [admin_email, contributor_email])
+        await configure_integration(
+            session,
+            admin_email=admin_email,
+            integration_type=IntegrationType.jira,
+            secrets={
+                "base_url": "https://jira.example.com",
+                "service_token": "test-jira-token",
+                "webhook_secret": "test-secret",
+            },
+        )
+        source = await create_active_source(
+            session,
+            partner_name=partner_name,
+            contributor_email=contributor_email,
+            payload=ConnectedSourceRequest(
+                source_type="jira_issue",
+                source_url=f"https://jira.example.com/browse/{issue_key}",
+            ),
+        )
+
+        async def fake_issue(self, *, base_url: str, token: str, issue_key: str):
+            return {
+                "key": issue_key,
+                "fields": {
+                    "summary": "SAP HANA Cloud readiness issue",
+                    "created": "2026-03-04T09:00:00.000+0000",
+                    "updated": "2026-07-02T11:13:00.000+0000",
+                    "description": "Initial AGI CPU readiness tracking for SAP HANA Cloud.",
+                    "comment": {
+                        "comments": [
+                            {
+                                "id": "301",
+                                "created": "2026-05-05T10:00:00.000+0000",
+                                "body": "May certification inputs are ready for review.",
+                            },
+                            {
+                                "id": "302",
+                                "created": "2026-07-01T21:46:00.000+0000",
+                                "body": "July validation now targets a CRB package in Aug./Sept.",
+                            },
+                        ]
+                    },
+                },
+                "changelog": {
+                    "histories": [
+                        {
+                            "id": "401",
+                            "created": "2026-04-10T12:00:00.000+0000",
+                            "items": [{"field": "description"}],
+                        }
+                    ]
+                },
+            }
+
+        monkeypatch.setattr(JiraSourceSyncConnector, "_fetch_issue", fake_issue)
+        result = await SourceSyncService(session, get_settings()).sync_source(
+            source.connected_source_id
+        )
+
+        assert result.fetched == 3
+        assert result.queued == 3
+        events = list(
+            (
+                await session.execute(
+                    select(SourceEvent).order_by(SourceEvent.source_event_timestamp.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        state = await session.get(SourceSyncState, source.connected_source_id)
+
+        assert [event.source_event_timestamp.month for event in events] == [4, 5, 7]
+        assert [event.technical_metadata["event_type"] for event in events] == [
+            "description",
+            "comment",
+            "comment",
+        ]
+        assert state is not None
+        assert state.cursor_timestamp == datetime(2026, 7, 1, 21, 46, tzinfo=UTC)
+        assert state.backfill_completed_at is not None
+
+        await cleanup_test_records(session, [partner_name], [admin_email, contributor_email])
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_existing_jira_source_backfills_before_existing_cursor(monkeypatch) -> None:
+    admin_email = f"sync-jira-legacy-admin-{uuid.uuid4()}@example.com"
+    contributor_email = f"sync-jira-legacy-contributor-{uuid.uuid4()}@example.com"
+    partner_name = f"Sync Jira Legacy Backfill Partner {uuid.uuid4()}"
+    issue_key = "STESOL-888"
+    cursor_timestamp = datetime(2026, 7, 1, tzinfo=UTC)
+    cursor_value = cursor_timestamp.isoformat()
+
+    async with get_session_factory()() as session:
+        await cleanup_test_records(session, [partner_name], [admin_email, contributor_email])
+        await configure_integration(
+            session,
+            admin_email=admin_email,
+            integration_type=IntegrationType.jira,
+            secrets={
+                "base_url": "https://jira.example.com",
+                "service_token": "test-jira-token",
+                "webhook_secret": "test-secret",
+            },
+        )
+        source = await create_active_source(
+            session,
+            partner_name=partner_name,
+            contributor_email=contributor_email,
+            payload=ConnectedSourceRequest(
+                source_type="jira_issue",
+                source_url=f"https://jira.example.com/browse/{issue_key}",
+            ),
+        )
+        session.add(
+            SourceSyncState(
+                connected_source_id=source.connected_source_id,
+                cursor_value=cursor_value,
+                cursor_timestamp=cursor_timestamp,
+            )
+        )
+        await session.commit()
+
+        async def fake_issue(self, *, base_url: str, token: str, issue_key: str):
+            return {
+                "key": issue_key,
+                "fields": {
+                    "summary": "Legacy Jira source",
+                    "comment": {
+                        "comments": [
+                            {
+                                "id": "501",
+                                "created": "2026-05-15T10:00:00.000+0000",
+                                "body": "Historic May Jira comment should be backfilled.",
+                            },
+                            {
+                                "id": "502",
+                                "created": "2026-08-15T10:00:00.000+0000",
+                                "body": (
+                                    "Future incremental comment should wait for cursor polling."
+                                ),
+                            },
+                        ]
+                    },
+                },
+                "changelog": {"histories": []},
+            }
+
+        monkeypatch.setattr(JiraSourceSyncConnector, "_fetch_issue", fake_issue)
+        result = await SourceSyncService(session, get_settings()).sync_source(
+            source.connected_source_id
+        )
+
+        assert result.fetched == 1
+        assert result.queued == 1
+        events = list((await session.execute(select(SourceEvent))).scalars().all())
+        state = await session.get(SourceSyncState, source.connected_source_id)
+
+        assert events[0].external_event_id == f"{issue_key}:comment:501"
+        assert events[0].source_event_timestamp.month == 5
+        assert state is not None
+        assert state.cursor_value == cursor_value
+        assert state.cursor_timestamp == cursor_timestamp
+        assert state.backfill_completed_at is not None
 
         await cleanup_test_records(session, [partner_name], [admin_email, contributor_email])
         await session.commit()

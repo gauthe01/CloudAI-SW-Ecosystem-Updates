@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -237,21 +238,34 @@ class JiraSourceSyncConnector:
             token=token,
             issue_key=detail.issue_key,
         )
-        since = state.cursor_timestamp or (
-            datetime.now(UTC) - timedelta(days=self.settings.source_sync_initial_lookback_days)
+        backfill_required = state.backfill_completed_at is None
+        since = None if backfill_required else (
+            state.cursor_timestamp
+            or datetime.now(UTC) - timedelta(days=self.settings.source_sync_initial_lookback_days)
         )
+        until = state.cursor_timestamp if backfill_required else None
         candidates = jira_issue_to_sync_items(
             source=source,
             detail=detail,
             issue=issue,
             base_url=base_url.rstrip("/"),
             since=since,
+            until=until,
         )
         latest = max((item.source_event_timestamp for item in candidates), default=None)
+        cursor_timestamp = latest or state.cursor_timestamp
+        cursor_value = latest.isoformat() if latest else state.cursor_value
+        if backfill_required and state.cursor_timestamp is not None:
+            cursor_timestamp = state.cursor_timestamp
+            cursor_value = state.cursor_value
+        if backfill_required and cursor_timestamp is None:
+            cursor_timestamp = datetime.now(UTC)
+            cursor_value = cursor_timestamp.isoformat()
         return ConnectorSyncResult(
             items=candidates,
-            cursor_value=latest.isoformat() if latest else state.cursor_value,
-            cursor_timestamp=latest or state.cursor_timestamp,
+            cursor_value=cursor_value,
+            cursor_timestamp=cursor_timestamp,
+            backfill_completed=backfill_required,
         )
 
     async def _load_detail(self, source: ConnectedSource) -> ConnectedSourceJiraIssue:
@@ -288,14 +302,81 @@ class JiraSourceSyncConnector:
                 },
                 params={
                     "expand": "changelog",
-                    "fields": "summary,status,priority,duedate,attachment,comment",
+                    "fields": (
+                        "summary,status,priority,duedate,attachment,comment,"
+                        "description,created,updated"
+                    ),
                 },
             )
-        response.raise_for_status()
-        payload = response.json()
+            response.raise_for_status()
+            payload = response.json()
+            expanded_changelog = (
+                nested_list(payload, "changelog", "histories")
+                if isinstance(payload, dict)
+                else []
+            )
+            comments = await self._get_paginated_values(
+                client=client,
+                base_url=base_url,
+                token=token,
+                path=f"/rest/api/2/issue/{issue_key}/comment",
+                value_key="comments",
+            )
+            try:
+                changelog = await self._get_paginated_values(
+                    client=client,
+                    base_url=base_url,
+                    token=token,
+                    path=f"/rest/api/2/issue/{issue_key}/changelog",
+                    value_key="values",
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    raise
+                changelog = expanded_changelog
         if not isinstance(payload, dict):
             raise RuntimeError("Jira issue fetch returned an invalid payload.")
+        fields = payload.get("fields")
+        if isinstance(fields, dict):
+            fields["comment"] = {"comments": comments}
+        payload["changelog"] = {"histories": changelog}
         return payload
+
+    async def _get_paginated_values(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        base_url: str,
+        token: str,
+        path: str,
+        value_key: str,
+    ) -> list[dict[str, Any]]:
+        values: list[dict[str, Any]] = []
+        start_at = 0
+        max_results = 100
+        while True:
+            response = await client.get(
+                f"{base_url}{path}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                },
+                params={"startAt": start_at, "maxResults": max_results},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise RuntimeError("Jira paginated fetch returned an invalid payload.")
+            page_values = payload.get(value_key)
+            if not isinstance(page_values, list) and value_key == "values":
+                page_values = payload.get("histories")
+            if not isinstance(page_values, list):
+                return values
+            values.extend(item for item in page_values if isinstance(item, dict))
+            total = int(payload.get("total") or len(values))
+            start_at += int(payload.get("maxResults") or max_results)
+            if not page_values or start_at >= total:
+                return values
 
 
 def connector_for_source(
@@ -400,19 +481,64 @@ def jira_issue_to_sync_items(
     detail: ConnectedSourceJiraIssue,
     issue: dict[str, Any],
     base_url: str,
-    since: datetime,
+    since: datetime | None,
+    until: datetime | None = None,
 ) -> list[SyncItem]:
     fields = issue.get("fields") if isinstance(issue.get("fields"), dict) else {}
     issue_summary = str(fields.get("summary") or issue.get("key") or detail.issue_key)
     issue_url = detail.issue_url or f"{base_url}/browse/{detail.issue_key}"
     items: list[SyncItem] = []
+    histories = nested_list(issue, "changelog", "histories")
+
+    description = jira_text(fields.get("description"))
+    description_timestamp = jira_description_timestamp(fields=fields, histories=histories)
+    if description and should_include_jira_sync_item(
+        description_timestamp,
+        since=since,
+        until=until,
+    ):
+        description_digest = hashlib.sha256(description.encode("utf-8")).hexdigest()[:16]
+        items.append(
+            SyncItem(
+                external_event_id=(
+                    f"{detail.issue_key}:description:"
+                    f"{description_timestamp.isoformat()}:{description_digest}"
+                ),
+                idempotency_key=(
+                    f"sync:jira:{source.connected_source_id}:description:"
+                    f"{description_timestamp.isoformat()}:{description_digest}"
+                ),
+                source_url=issue_url,
+                source_event_timestamp=description_timestamp,
+                technical_metadata={
+                    "sync_kind": "poll",
+                    "issue_key": detail.issue_key,
+                    "event_type": "description",
+                },
+                raw_payload_json={
+                    "source_item": {
+                        "source_type": "jira",
+                        "event_type": "description",
+                        "issue_key": detail.issue_key,
+                        "issue_summary": issue_summary,
+                        "body": description,
+                        "source_url": issue_url,
+                        "source_timestamp": description_timestamp.isoformat(),
+                    }
+                },
+            )
+        )
 
     comments = nested_list(fields, "comment", "comments")
     for comment in comments:
         comment_id = str(comment.get("id") or "")
         body = jira_text(comment.get("body"))
         event_timestamp = parse_jira_datetime(comment.get("updated") or comment.get("created"))
-        if not comment_id or not body or event_timestamp <= since:
+        if not comment_id or not body or not should_include_jira_sync_item(
+            event_timestamp,
+            since=since,
+            until=until,
+        ):
             continue
         source_url = f"{issue_url}?focusedCommentId={comment_id}"
         items.append(
@@ -443,7 +569,6 @@ def jira_issue_to_sync_items(
             )
         )
 
-    histories = nested_list(issue, "changelog", "histories")
     for history in histories:
         history_id = str(history.get("id") or "")
         event_timestamp = parse_jira_datetime(history.get("created"))
@@ -451,7 +576,11 @@ def jira_issue_to_sync_items(
             item for item in history.get("items", [])
             if isinstance(item, dict) and is_meaningful_jira_change(item)
         ]
-        if not history_id or not changed_items or event_timestamp <= since:
+        if not history_id or not changed_items or not should_include_jira_sync_item(
+            event_timestamp,
+            since=since,
+            until=until,
+        ):
             continue
         items.append(
             SyncItem(
@@ -483,6 +612,38 @@ def jira_issue_to_sync_items(
         )
 
     return sorted(items, key=lambda item: item.source_event_timestamp)
+
+
+def jira_description_timestamp(
+    *,
+    fields: dict[str, Any],
+    histories: list[dict[str, Any]],
+) -> datetime:
+    description_change_times = [
+        parse_jira_datetime(history.get("created"))
+        for history in histories
+        if any(
+            isinstance(item, dict)
+            and str(item.get("field") or "").strip().lower() == "description"
+            for item in history.get("items", [])
+        )
+    ]
+    if description_change_times:
+        return max(description_change_times)
+    return parse_jira_datetime(fields.get("created") or fields.get("updated"))
+
+
+def should_include_jira_sync_item(
+    event_timestamp: datetime,
+    *,
+    since: datetime | None,
+    until: datetime | None,
+) -> bool:
+    if since is not None and event_timestamp <= since:
+        return False
+    if until is not None and event_timestamp > until:
+        return False
+    return True
 
 
 def nested_list(payload: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
@@ -546,6 +707,13 @@ def is_meaningful_jira_change(item: dict[str, Any]) -> bool:
     field = str(item.get("field") or "").strip().lower()
     if not field:
         return False
-    if field in {"status", "priority", "severity", "duedate", "due date", "attachment"}:
+    if field in {
+        "status",
+        "priority",
+        "severity",
+        "duedate",
+        "due date",
+        "attachment",
+    }:
         return True
     return any(keyword in field for keyword in ("target", "dependency", "link", "blocked"))
