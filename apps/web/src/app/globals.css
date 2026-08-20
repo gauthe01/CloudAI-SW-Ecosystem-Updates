@@ -6406,11 +6406,24 @@ h1 {
   border-radius: 7px;
 }
 
-.metadata-month-picker .metadata-month-textarea {
+.metadata-month-picker .metadata-month-display {
+  display: flex;
+  align-items: center;
+  width: 100%;
   min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #d5dbe5;
   border-radius: 7px 0 0 7px;
   border-right: 0;
-  resize: none;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.metadata-month-picker.empty .metadata-month-display {
+  color: #98a2b3;
 }
 
 .metadata-month-picker .cycle-picker-label {
@@ -6430,7 +6443,7 @@ h1 {
   cursor: pointer;
 }
 
-.metadata-month-picker .metadata-month-textarea:focus + .cycle-picker-label,
+.metadata-month-picker .metadata-month-display:focus,
 .metadata-month-picker .cycle-picker-label:focus {
   box-shadow: var(--focus-ring);
 }

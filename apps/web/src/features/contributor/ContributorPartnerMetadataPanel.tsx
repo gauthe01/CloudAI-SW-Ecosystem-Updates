@@ -840,12 +840,10 @@ function resizeTextarea(textarea: HTMLTextAreaElement | null) {
 }
 
 function MetadataMonthPicker({
-  maxLength = 240,
   onChange,
   placeholder,
   value,
 }: {
-  maxLength?: number;
   onChange: (value: string) => void;
   placeholder: string;
   value: string;
@@ -916,14 +914,14 @@ function MetadataMonthPicker({
       ref={pickerRef}
     >
       <div className="cycle-picker-control">
-        <AutoGrowTextarea
-          className="metadata-month-textarea"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder={placeholder}
-          rows={1}
-          maxLength={maxLength}
-        />
+        <button
+          className="metadata-month-display"
+          type="button"
+          onClick={handleToggle}
+          aria-expanded={open}
+        >
+          {value ? formatMonthLabel(value) : placeholder}
+        </button>
         <button
           className="cycle-picker-label"
           type="button"
