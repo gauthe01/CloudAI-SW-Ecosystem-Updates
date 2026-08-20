@@ -1,6 +1,6 @@
 """source sync backfill completion marker
 
-Revision ID: 0020_source_sync_backfill_completed
+Revision ID: 0020_source_sync_backfill
 Revises: 0019_knowledge_upload_dedupe
 Create Date: 2026-08-20
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0020_source_sync_backfill_completed"
+revision: str = "0020_source_sync_backfill"
 down_revision: str | None = "0019_knowledge_upload_dedupe"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
