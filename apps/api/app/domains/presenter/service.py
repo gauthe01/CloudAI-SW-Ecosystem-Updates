@@ -1021,7 +1021,7 @@ def format_period_label(
 def draft_email_subject(*, period_label: str, partner_name: str | None) -> str:
     scope = partner_name or "Partner Ecosystem"
     title = "Monthly Update" if len(period_label) == 7 else "Update"
-    return f"{scope} {title} - {period_label}"
+    return f"{scope} {title} - {email_period_label(period_label)}"
 
 
 def draft_email_body(
@@ -1031,27 +1031,31 @@ def draft_email_body(
     updates: list[PresenterUpdateResponse],
 ) -> str:
     greeting = "Hello,"
-    scope = partner_name or "the partner ecosystem"
+    scope = partner_name or "the Cloud AI Software Ecosystem"
+    display_period = email_period_label(period_label)
     if not updates:
         return (
             f"{greeting}\n\n"
-            f"There are no approved updates available for {scope} in {period_label} yet.\n\n"
+            f"There are no approved updates available for {scope} in {display_period} yet.\n\n"
             "Regards,"
         )
+    grouped_updates = group_email_updates(updates, single_partner=partner_name is not None)
     lines = [
         greeting,
         "",
-        f"Please find the approved {period_label} update for {scope}:",
+        f"Please find the approved {display_period} update for {scope}:",
         "",
     ]
-    for index, update in enumerate(updates[:12], start=1):
-        lines.append(f"{index}. {update.partner_name} - {update.title}")
-        summary = html_to_email_text(update.summary)
-        if summary:
-            lines.extend(f"   {line}" for line in summary.splitlines())
-    if len(updates) > 12:
-        lines.append("")
-        lines.append(f"{len(updates) - 12} additional approved update(s) are available.")
+    for category in grouped_updates:
+        if category.label:
+            lines.append(f"{category.label}:")
+        for partner_group in category.partners:
+            lines.append(f"{partner_group.partner_name}:")
+            for item in partner_group.items:
+                lines.append(f"\t- {item}")
+            lines.append("")
+    while lines and lines[-1] == "":
+        lines.pop()
     lines.extend(["", "Regards,"])
     return "\n".join(lines)
 
@@ -1066,7 +1070,8 @@ def html_to_email_text(value: str) -> str:
     text = unescape(text)
     text = text.replace("\xa0", " ")
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
-    return "\n".join(line for line in lines if line).strip()
+    cleaned_lines = [clean_email_line(line) for line in lines]
+    return "\n".join(line for line in cleaned_lines if line).strip()
 
 
 def normalize_link_html_for_email(value: str) -> str:
@@ -1076,15 +1081,157 @@ def normalize_link_html_for_email(value: str) -> str:
     )
 
     def replace(match: re.Match[str]) -> str:
-        href = unescape(re.sub(r"<[^>]+>", "", match.group(1))).strip()
         label = unescape(re.sub(r"<[^>]+>", "", match.group(2))).strip()
-        if not label:
-            return href
-        if href and href != label:
-            return f"{label} ({href})"
         return label
 
     return pattern.sub(replace, value)
+
+
+@dataclass(frozen=True)
+class EmailPartnerUpdateGroup:
+    partner_name: str
+    items: list[str]
+
+
+@dataclass(frozen=True)
+class EmailCategoryUpdateGroup:
+    label: str | None
+    partners: list[EmailPartnerUpdateGroup]
+
+
+EMAIL_CATEGORY_ORDER = ["HyperScalers", "OSVs", "ISVs", "Customers", "Other Partners"]
+
+EMAIL_PARTNER_CATEGORY = {
+    "amazon": "HyperScalers",
+    "amazon web services": "HyperScalers",
+    "aws": "HyperScalers",
+    "gcp": "HyperScalers",
+    "google": "HyperScalers",
+    "google cloud": "HyperScalers",
+    "microsoft": "HyperScalers",
+    "msft": "HyperScalers",
+    "canonical": "OSVs",
+    "redhat": "OSVs",
+    "red hat": "OSVs",
+    "rhel": "OSVs",
+    "rhat": "OSVs",
+    "suse": "OSVs",
+    "sap hana cloud": "ISVs",
+    "cohere": "ISVs",
+    "databricks": "ISVs",
+    "elastic": "ISVs",
+    "elasticco": "ISVs",
+    "mongodb": "ISVs",
+    "mistral": "ISVs",
+    "nutanix": "ISVs",
+    "pinecone": "ISVs",
+    "rafay": "ISVs",
+    "rafay systems": "ISVs",
+    "redis": "ISVs",
+    "tinkerblox": "ISVs",
+    "tinklrbox": "ISVs",
+    "vmware": "ISVs",
+    "jpmc": "Customers",
+    "jp morgan": "Customers",
+    "jp morgan chase": "Customers",
+    "optum": "Customers",
+    "salesforce": "Customers",
+    "teradata": "Customers",
+    "uber": "Customers",
+    "uhg": "Customers",
+    "united health group": "Customers",
+}
+
+
+def email_period_label(period_label: str) -> str:
+    if re.fullmatch(r"\d{4}-\d{2}", period_label):
+        try:
+            return parse_cycle_month(period_label).strftime("%B %Y")
+        except HTTPException:
+            return period_label
+    return period_label
+
+
+def group_email_updates(
+    updates: list[PresenterUpdateResponse],
+    *,
+    single_partner: bool,
+) -> list[EmailCategoryUpdateGroup]:
+    partner_groups: list[EmailPartnerUpdateGroup] = []
+    partner_index: dict[str, EmailPartnerUpdateGroup] = {}
+    for update in updates:
+        item = email_update_line(update)
+        if not item:
+            continue
+        partner_name = update.partner_name
+        existing = partner_index.get(partner_name)
+        if existing:
+            existing.items.append(item)
+        else:
+            group = EmailPartnerUpdateGroup(partner_name=partner_name, items=[item])
+            partner_index[partner_name] = group
+            partner_groups.append(group)
+    if single_partner:
+        return [EmailCategoryUpdateGroup(label=None, partners=partner_groups)]
+
+    category_index: dict[str, list[EmailPartnerUpdateGroup]] = {
+        label: [] for label in EMAIL_CATEGORY_ORDER
+    }
+    for group in partner_groups:
+        category_index[email_category_for_partner(group.partner_name)].append(group)
+    return [
+        EmailCategoryUpdateGroup(label=label, partners=category_index[label])
+        for label in EMAIL_CATEGORY_ORDER
+        if category_index[label]
+    ]
+
+
+def email_category_for_partner(partner_name: str) -> str:
+    normalized_name = (
+        partner_name.strip().lower().replace(".", "").replace("&", "and")
+    )
+    normalized_name = re.sub(r"\s+", " ", normalized_name)
+    return EMAIL_PARTNER_CATEGORY.get(normalized_name, "Other Partners")
+
+
+def email_update_line(update: PresenterUpdateResponse) -> str:
+    title = single_line_email_text(html_to_email_text(update.title))
+    summary = single_line_email_text(html_to_email_text(update.summary))
+    if not summary:
+        return title
+    if not title:
+        return summary
+    lowered_title = title.lower()
+    lowered_summary = summary.lower()
+    if lowered_title in lowered_summary:
+        return summary
+    if lowered_summary in lowered_title:
+        return title
+    return f"{title}: {summary}"
+
+
+def single_line_email_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def clean_email_line(line: str) -> str:
+    cleaned = re.sub(r"\([^)]*https?://[^)]*\)", "", line, flags=re.IGNORECASE)
+    cleaned = re.sub(r"https?://\S+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\b(source|sources)\s*:\s*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\b(source|sources)\s*:\s*.*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip(" -\t")
 
 
 def presenter_ask_system_prompt() -> str:
@@ -1819,12 +1966,13 @@ def build_decision_board_payload(
                 "summary": strip_html(update.summary),
                 "approved_at": update.approved_at.isoformat() if update.approved_at else None,
             }
-            for update in updates[:80]
+            for update in updates
         ],
         "partner_metadata": metadata_snapshots,
         "output_contract": {
             "signals": (
-                "0-15 decision cards. Each card must include partner_id, partner_name, "
+                "All decision-board cards that are semantically necessary for the supplied scope. "
+                "Each card must include partner_id, partner_name, "
                 "priority, title, update_line, and source_kind. action is optional and "
                 "must be present only when explicitly grounded."
             ),
@@ -1885,7 +2033,7 @@ async def fetch_decision_board_model_content(
         ],
         response_format={"type": "json_object"},
         temperature=0,
-        max_tokens=1600,
+        max_tokens=6000,
     )
     return response.choices[0].message.content or "{}"
 
@@ -1922,7 +2070,7 @@ def parse_decision_board_response(
         raw_signals = []
 
     signals: list[PresenterDecisionBoardSignal] = []
-    for raw_item in raw_signals[:15]:
+    for raw_item in raw_signals:
         if not isinstance(raw_item, dict):
             continue
         title = clean_agent_text(raw_item.get("title"))

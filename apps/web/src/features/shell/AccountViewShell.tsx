@@ -425,11 +425,9 @@ function PresenterSectionTabs({
         title="Draft Email"
         onClick={onEmailOpen}
       >
-        <svg className="presenter-email-icon" aria-hidden="true" viewBox="0 0 24 18">
-          <path d="M2.75 2.25h18.5v13.5H2.75z" />
-          <path d="m3.5 3 8.5 6.5L20.5 3" />
-          <path d="m3.75 15 6.1-5.35" />
-          <path d="m20.25 15-6.1-5.35" />
+        <svg className="presenter-email-icon" aria-hidden="true" viewBox="0 0 24 24">
+          <rect x="3.5" y="5.5" width="17" height="13" rx="2.5" />
+          <path d="m5.25 8 6.05 4.75a1.1 1.1 0 0 0 1.4 0L18.75 8" />
         </svg>
       </button>
       <button

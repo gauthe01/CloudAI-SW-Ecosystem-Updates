@@ -111,6 +111,26 @@ def test_decision_board_parser_accepts_interview_card_shape() -> None:
     assert signals[1].action == "Confirm campaign input owner"
 
 
+def test_decision_board_parser_preserves_more_than_fifteen_cards() -> None:
+    raw_signals = [
+        {
+            "partner_id": str(uuid.uuid4()),
+            "partner_name": f"Partner {index}",
+            "priority": "P2",
+            "title": f"Action item {index}",
+            "update_line": f"Action item {index} needs presenter attention.",
+            "source_kind": "approved_update",
+        }
+        for index in range(20)
+    ]
+
+    parsed = parse_decision_board_response(
+        json.dumps({"signals": raw_signals, "source_note": None})
+    )
+
+    assert len(parsed["signals"]) == 20
+
+
 def test_executive_summary_payload_excludes_source_fields() -> None:
     update = presenter_service.PresenterUpdateResponse(
         update_id=uuid.uuid4(),
@@ -425,19 +445,24 @@ async def test_presenter_reads_approved_updates_across_unassigned_partners() -> 
         assert any(item.partner_name == partner_a_name for item in analysis.decision_board)
 
         email = await service.draft_email(cycle=cycle, partner_id=partner_a.partner_id)
-        assert email.subject == f"{partner_a_name} Monthly Update - {cycle}"
+        assert email.subject == f"{partner_a_name} Monthly Update - August 2031"
+        assert f"{partner_a_name}:" in email.body
         assert "Release decision needed" in email.body
+        assert (
+            "- Release decision needed: Partner release validation needs a decision this month."
+            in email.body
+        )
         assert partner_b_name not in email.body
         assert topic_label not in email.body
 
         all_partner_email = await service.draft_email(cycle=cycle)
-        assert f"{topic_label} - Cloud Marketing Initiatives Tracked here" in all_partner_email.body
+        assert all_partner_email.subject == "Partner Ecosystem Monthly Update - August 2031"
+        assert "Other Partners:" in all_partner_email.body
+        assert f"{topic_label}:" in all_partner_email.body
+        assert "- Cloud Marketing Initiatives Tracked here" in all_partner_email.body
         assert "<p>" not in all_partner_email.body
         assert "<a href=" not in all_partner_email.body
-        assert (
-            "Cloud Marketing Initiatives Tracked here (https://example.com/marketing)"
-            in all_partner_email.body
-        )
+        assert "https://example.com/marketing" not in all_partner_email.body
 
         await cleanup_test_records(session, [partner_a_name, partner_b_name], [presenter_email])
         await session.commit()

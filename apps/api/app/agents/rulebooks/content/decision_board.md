@@ -121,18 +121,19 @@ Status does not create a card and does not raise priority.
 
 ## Dedupe And Selection Rules
 
-- Return no more than 15 cards.
-- Generate fewer than 15 when fewer items are necessary.
+- Do not apply a fixed maximum card limit.
+- If the presenter selects a date range, evaluate the full supplied date range
+  and return every semantically necessary Decision Board action item in that
+  range.
+- Generate fewer cards only when fewer supplied items are semantically necessary.
 - Do not merge approved-update cards with metadata-risk cards, even if they
   describe a related issue. Show both so the presenter can decide.
 - Deduplicate semantically similar approved-update cards with each other.
 - Deduplicate semantically similar metadata-risk cards with each other.
-- When more than 15 candidate cards exist, keep cards by priority first, then by
-  strongest semantic signal.
+- Order cards by priority first, then by strongest semantic signal.
 - Stronger signals include explicit blockers, explicit decisions or asks, urgent
   deadlines, high/critical severity, customer or executive impact, and concrete
   actions.
-- Drop weaker P3 watch items first when the board exceeds 15 cards.
 
 ## UI-Facing Card Shape
 

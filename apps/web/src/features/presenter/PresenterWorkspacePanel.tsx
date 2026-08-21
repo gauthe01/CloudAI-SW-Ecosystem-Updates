@@ -323,7 +323,6 @@ export function PresenterWorkspacePanel({
           setEmailCopyNotice(null);
         }}
         onCopyNotice={setEmailCopyNotice}
-        onRefresh={handleDraftEmail}
       />
     </div>
   );
@@ -552,7 +551,6 @@ function PresenterEmailModal({
   open,
   onClose,
   onCopyNotice,
-  onRefresh,
 }: {
   busy: boolean;
   copyNotice: string | null;
@@ -560,20 +558,52 @@ function PresenterEmailModal({
   open: boolean;
   onClose: () => void;
   onCopyNotice: (notice: string | null) => void;
-  onRefresh: () => void;
 }) {
+  const [subject, setSubject] = useState("");
+  const bodyEditorRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!draftEmail) {
+      setSubject("");
+      if (bodyEditorRef.current) {
+        bodyEditorRef.current.innerHTML = "";
+      }
+      return;
+    }
+    setSubject(draftEmail.subject);
+    if (bodyEditorRef.current) {
+      bodyEditorRef.current.innerHTML = formatEmailBodyHtml(draftEmail.body);
+    }
+  }, [draftEmail, open]);
+
   if (!open) {
     return null;
   }
 
   async function copyEmail() {
-    if (!draftEmail) {
+    if (!draftEmail || busy) {
       return;
     }
-    const text = `Subject: ${draftEmail.subject}\n\n${draftEmail.body}`;
+    const bodyText = normalizeEditableEmailText(bodyEditorRef.current?.innerText ?? "");
+    const text = `Subject: ${subject.trim()}\n\n${bodyText}`;
+    const bodyHtml = bodyEditorRef.current?.innerHTML ?? formatEmailBodyHtml(bodyText);
+    const html = [
+      `<div><strong>Subject:</strong> ${escapeHtml(subject.trim())}</div>`,
+      "<br>",
+      bodyHtml,
+    ].join("");
     try {
-      await navigator.clipboard.writeText(text);
-      onCopyNotice("Copied formatted email to clipboard.");
+      if (typeof ClipboardItem !== "undefined" && navigator.clipboard.write) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/html": new Blob([html], { type: "text/html" }),
+            "text/plain": new Blob([text], { type: "text/plain" }),
+          }),
+        ]);
+      } else {
+        await navigator.clipboard.writeText(text);
+      }
+      onCopyNotice("Copied email to clipboard.");
     } catch {
       onCopyNotice("Unable to copy email.");
     }
@@ -605,13 +635,34 @@ function PresenterEmailModal({
           ) : null}
           {!busy && draftEmail ? (
             <>
-              <div className="presenter-email-subject-row">
-                <span>Subject: {draftEmail.subject}</span>
-                <button type="button" aria-label="Copy formatted email" onClick={copyEmail}>
-                  Copy
-                </button>
-              </div>
-              <pre className="presenter-email-preview">{draftEmail.body}</pre>
+              <label className="presenter-email-subject-row" htmlFor="presenter-email-subject">
+                <span>Subject</span>
+                <input
+                  id="presenter-email-subject"
+                  type="text"
+                  value={subject}
+                  onChange={(event) => {
+                    setSubject(event.target.value);
+                    onCopyNotice(null);
+                  }}
+                />
+              </label>
+              <label className="presenter-email-body-field" htmlFor="presenter-email-body">
+                <span>Email body</span>
+                <div
+                  id="presenter-email-body"
+                  ref={bodyEditorRef}
+                  className="presenter-email-body-editor"
+                  role="textbox"
+                  aria-multiline="true"
+                  contentEditable
+                  suppressContentEditableWarning
+                  spellCheck
+                  onInput={() => {
+                    onCopyNotice(null);
+                  }}
+                />
+              </label>
               {copyNotice ? <p className="presenter-email-copy-notice">{copyNotice}</p> : null}
             </>
           ) : null}
@@ -622,19 +673,68 @@ function PresenterEmailModal({
           ) : null}
         </div>
         <div className="presenter-email-modal-actions">
-          <button className="modal-btn secondary disabled" type="button" disabled>
-            Connect Outlook
-          </button>
-          <button className="modal-btn secondary" type="button" onClick={onRefresh} disabled={busy}>
-            Regenerate
-          </button>
-          <button className="modal-btn primary" type="button" onClick={onClose}>
+          <button className="modal-btn secondary" type="button" onClick={onClose}>
             Close
+          </button>
+          <button className="modal-btn primary" type="button" onClick={copyEmail} disabled={busy || !draftEmail}>
+            Copy
           </button>
         </div>
       </section>
     </div>
   );
+}
+
+function formatEmailBodyHtml(body: string): string {
+  const lines = body.split(/\r?\n/);
+  return lines
+    .map((line) => {
+      if (!line.trim()) {
+        return "<div><br></div>";
+      }
+      if (isEmailHeadingLine(line)) {
+        return `<div><strong>${escapeHtml(line.trim())}</strong></div>`;
+      }
+      const bullet = line.match(/^\s*-\s+(.+)$/);
+      if (bullet) {
+        return `<div class="presenter-email-bullet-line">\t- ${escapeHtml(bullet[1].trim())}</div>`;
+      }
+      return `<div>${escapeHtml(line)}</div>`;
+    })
+    .join("");
+}
+
+function isEmailHeadingLine(line: string): boolean {
+  const trimmed = line.trim();
+  return (
+    trimmed.endsWith(":") &&
+    trimmed !== "Subject:" &&
+    !trimmed.toLowerCase().startsWith("please find ")
+  );
+}
+
+function normalizeEditableEmailText(value: string): string {
+  return value
+    .replace(/\u00a0/g, " ")
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmedStart = line.trimStart();
+      if (trimmedStart.startsWith("- ")) {
+        return `\t${trimmedStart}`;
+      }
+      return line.trimEnd();
+    })
+    .join("\n")
+    .trim();
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function ExecutiveSummaryPanel({
@@ -950,7 +1050,7 @@ function DraftEmailPanel({
           <pre>{draftEmail.body}</pre>
         </div>
       ) : (
-        <p className="muted-copy">Generate a read-only draft from approved updates.</p>
+        <p className="muted-copy">Generate an editable draft from approved updates.</p>
       )}
     </section>
   );
@@ -1721,7 +1821,7 @@ function formatPeriodLabel(period: PresenterPeriodQuery): string {
 
 function formatShortDate(value: string): string {
   return new Intl.DateTimeFormat("en", {
-    month: "short",
+    month: "long",
     day: "numeric",
     year: "numeric",
   }).format(new Date(`${value}T00:00:00`));
@@ -1729,7 +1829,7 @@ function formatShortDate(value: string): string {
 
 function formatCycleLabel(value: string): string {
   return new Intl.DateTimeFormat("en", {
-    month: "short",
+    month: "long",
     year: "numeric",
   }).format(new Date(`${value}-01T00:00:00`));
 }
