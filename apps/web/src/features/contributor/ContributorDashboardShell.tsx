@@ -113,6 +113,7 @@ export function ContributorDashboardShell({
           cycle={cycle}
           cycleLabel={activeCycleLabel}
           onCancel={() => setAddUpdateOpen(false)}
+          onCycleChange={handleCycleChange}
           onCreated={handleManualUpdateCreated}
         />
       </div>

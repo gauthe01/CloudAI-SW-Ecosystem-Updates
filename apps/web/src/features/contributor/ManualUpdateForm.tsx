@@ -32,7 +32,13 @@ type ManualUpdateFormProps = {
   cycle: string;
   cycleLabel: string;
   onCancel: () => void;
+  onCycleChange: (cycle: string) => void;
   onCreated: (update: PartnerUpdate) => void;
+};
+
+type CycleParts = {
+  year: number;
+  month: number;
 };
 
 type DraftAttachment = {
@@ -74,6 +80,7 @@ export function ManualUpdateForm({
   cycle,
   cycleLabel,
   onCancel,
+  onCycleChange,
   onCreated,
 }: ManualUpdateFormProps) {
   const editorRef = useRef<HTMLDivElement | null>(null);
@@ -99,6 +106,15 @@ export function ManualUpdateForm({
   const [toast, setToast] = useState<string | null>(null);
 
   const remainingCharacters = MAX_SUMMARY_LENGTH - summaryText.length;
+  const parsedCycle = parseCycle(cycle);
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+  const previousCycle = parsedCycle ? addMonths(parsedCycle, -1) : null;
+  const nextCycle =
+    parsedCycle && !isFutureCycle(addMonths(parsedCycle, 1), currentYear, currentMonth)
+      ? addMonths(parsedCycle, 1)
+      : null;
 
   useEffect(() => {
     return () => {
@@ -129,9 +145,7 @@ export function ManualUpdateForm({
     ? isFilesMode
       ? "Uploading..."
       : "Saving..."
-    : isFilesMode
-      ? "Upload & save"
-      : "Save update";
+    : "Save Update";
 
   function syncEditorState() {
     const editor = editorRef.current;
@@ -517,9 +531,31 @@ export function ManualUpdateForm({
           <p>{cycleContext}</p>
         </div>
         <div className="add-update-cycle" aria-label={`Selected period ${cycleLabel}`}>
-          <span aria-hidden="true">‹</span>
+          <button
+            type="button"
+            aria-label="Previous month"
+            onClick={() => {
+              if (previousCycle) {
+                onCycleChange(formatCycleValue(previousCycle));
+              }
+            }}
+            disabled={!previousCycle || saving}
+          >
+            ‹
+          </button>
           <strong>{cycleLabel}</strong>
-          <span aria-hidden="true">›</span>
+          <button
+            type="button"
+            aria-label="Next month"
+            onClick={() => {
+              if (nextCycle) {
+                onCycleChange(formatCycleValue(nextCycle));
+              }
+            }}
+            disabled={!nextCycle || saving}
+          >
+            ›
+          </button>
         </div>
         <button className="add-update-cancel" type="button" onClick={onCancel}>
           Cancel
@@ -888,6 +924,35 @@ async function copyText(text: string): Promise<void> {
   textarea.select();
   document.execCommand("copy");
   document.body.removeChild(textarea);
+}
+
+function parseCycle(cycle: string): CycleParts | null {
+  const match = /^(\d{4})-(\d{2})$/.exec(cycle);
+  if (!match) {
+    return null;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return null;
+  }
+  return { year, month };
+}
+
+function formatCycleValue(cycle: CycleParts): string {
+  return `${cycle.year}-${String(cycle.month).padStart(2, "0")}`;
+}
+
+function addMonths(cycle: CycleParts, delta: number): CycleParts {
+  const date = new Date(cycle.year, cycle.month - 1 + delta, 1);
+  return {
+    year: date.getFullYear(),
+    month: date.getMonth() + 1,
+  };
+}
+
+function isFutureCycle(cycle: CycleParts, currentYear: number, currentMonth: number): boolean {
+  return cycle.year > currentYear || (cycle.year === currentYear && cycle.month > currentMonth);
 }
 
 function ManualIcon() {
